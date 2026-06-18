@@ -168,9 +168,6 @@ INSERT INTO storage.buckets (id, name, public)
   VALUES ('receipts', 'receipts', true)
   ON CONFLICT (id) DO NOTHING;
 
--- Enable RLS on storage objects (idempotent)
-ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
-
 -- driver-documents policies
 CREATE POLICY "anon_upload_driver_documents"
   ON storage.objects FOR INSERT TO anon
