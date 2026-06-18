@@ -1,19 +1,24 @@
 -- =============================================================
--- AL-SHAIBIA ADMIN PANEL — SUPABASE SCHEMA
+-- AL-SHAIBIA ADMIN PANEL — SUPABASE SCHEMA (FIXED)
 -- Supabase Dashboard → SQL Editor → New Query → paste → Run
+--
+-- IMPORTANT: public.users already exists in this project with
+-- id typed as TEXT (not UUID). All foreign key columns that
+-- reference users.id are declared as TEXT to match.
+-- Each new table's own PRIMARY KEY stays UUID / gen_random_uuid().
 -- =============================================================
 
 
 -- =============================================================
 -- SECTION 1: TABLES
--- Order matters: public.users must exist before any table that
--- references it via a foreign key (drivers, orders, payments,
--- ratings_disputes).
+-- public.users already exists — skipped via IF NOT EXISTS.
+-- All other tables are created in FK-safe order.
 -- =============================================================
 
--- 1a. Users (consumers + drivers)
+-- 1a. Users — already exists, this is a no-op.
+-- Shown here for reference only; IF NOT EXISTS prevents re-creation.
 CREATE TABLE IF NOT EXISTS public.users (
-  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  id          TEXT        PRIMARY KEY,
   full_name   TEXT        NOT NULL,
   phone       TEXT        NOT NULL,
   role        TEXT        NOT NULL CHECK (role IN ('consumer', 'driver')),
@@ -22,9 +27,10 @@ CREATE TABLE IF NOT EXISTS public.users (
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- 1b. Drivers (extends users — one row per driver)
+-- 1b. Drivers
+-- user_id is TEXT to match the existing users.id (TEXT) column.
 CREATE TABLE IF NOT EXISTS public.drivers (
-  user_id           UUID        PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
+  user_id           TEXT        PRIMARY KEY REFERENCES public.users(id) ON DELETE CASCADE,
   truck_photo_url   TEXT,
   license_photo_url TEXT,
   ccp_receipt_url   TEXT,
@@ -37,30 +43,34 @@ CREATE TABLE IF NOT EXISTS public.drivers (
 );
 
 -- 1c. Orders
+-- customer_id and driver_id are TEXT to match users.id.
+-- orders.id keeps its own UUID primary key.
 CREATE TABLE IF NOT EXISTS public.orders (
-  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  customer_id UUID        REFERENCES public.users(id) ON DELETE SET NULL,
-  driver_id   UUID        REFERENCES public.users(id) ON DELETE SET NULL,
-  details     TEXT        NOT NULL,
+  id          UUID           PRIMARY KEY DEFAULT gen_random_uuid(),
+  customer_id TEXT           REFERENCES public.users(id) ON DELETE SET NULL,
+  driver_id   TEXT           REFERENCES public.users(id) ON DELETE SET NULL,
+  details     TEXT           NOT NULL,
   price       NUMERIC(12, 2) NOT NULL DEFAULT 0,
-  status      TEXT        NOT NULL DEFAULT 'Pending'
-                          CHECK (status IN ('Pending', 'Completed', 'Cancelled', 'Rejected')),
+  status      TEXT           NOT NULL DEFAULT 'Pending'
+                             CHECK (status IN ('Pending', 'Completed', 'Cancelled', 'Rejected')),
   wilaya      TEXT,
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at  TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
 
--- 1d. Payments (subscription receipts from drivers)
+-- 1d. Payments
+-- driver_id is TEXT to match users.id.
+-- payments.id keeps its own UUID primary key.
 CREATE TABLE IF NOT EXISTS public.payments (
-  id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  driver_id   UUID        REFERENCES public.users(id) ON DELETE SET NULL,
+  id          UUID           PRIMARY KEY DEFAULT gen_random_uuid(),
+  driver_id   TEXT           REFERENCES public.users(id) ON DELETE SET NULL,
   amount      NUMERIC(12, 2) NOT NULL DEFAULT 0,
   receipt_url TEXT,
-  status      TEXT        NOT NULL DEFAULT 'pending'
-                          CHECK (status IN ('pending', 'approved', 'rejected')),
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  status      TEXT           NOT NULL DEFAULT 'pending'
+                             CHECK (status IN ('pending', 'approved', 'rejected')),
+  created_at  TIMESTAMPTZ    NOT NULL DEFAULT NOW()
 );
 
--- 1e. Announcements (no FK — standalone content)
+-- 1e. Announcements — no FK, no change needed.
 CREATE TABLE IF NOT EXISTS public.announcements (
   id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   title           TEXT        NOT NULL,
@@ -71,24 +81,23 @@ CREATE TABLE IF NOT EXISTS public.announcements (
 );
 
 -- 1f. Ratings & Disputes
+-- driver_id is TEXT to match users.id.
 CREATE TABLE IF NOT EXISTS public.ratings_disputes (
-  id        UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  driver_id UUID        REFERENCES public.users(id) ON DELETE SET NULL,
-  rating    INTEGER     NOT NULL CHECK (rating BETWEEN 1 AND 5),
-  comment   TEXT,
-  wilaya    TEXT,
-  status    TEXT        NOT NULL DEFAULT 'pending'
-                        CHECK (status IN ('pending', 'resolved', 'dismissed')),
+  id         UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+  driver_id  TEXT        REFERENCES public.users(id) ON DELETE SET NULL,
+  rating     INTEGER     NOT NULL CHECK (rating BETWEEN 1 AND 5),
+  comment    TEXT,
+  wilaya     TEXT,
+  status     TEXT        NOT NULL DEFAULT 'pending'
+                         CHECK (status IN ('pending', 'resolved', 'dismissed')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 
 -- =============================================================
 -- SECTION 2: ROW LEVEL SECURITY (RLS)
--- The admin dashboard uses the anon key, so policies grant
--- full SELECT / INSERT / UPDATE / DELETE to the anon role.
--- If you later add Supabase Auth for admin login, also add
--- policies for the `authenticated` role below.
+-- Full access granted to the anon role (used by the dashboard
+-- via VITE_SUPABASE_ANON_KEY). ALTER … ENABLE is idempotent.
 -- =============================================================
 
 ALTER TABLE public.users            ENABLE ROW LEVEL SECURITY;
@@ -131,10 +140,10 @@ CREATE POLICY "admin_anon_all_disputes"
 
 -- =============================================================
 -- SECTION 3: REALTIME PUBLICATION
--- Enables live Supabase subscriptions used by:
---   - Dashboard (users signups, driver counts)
---   - Driver Queue (new pending drivers appear instantly)
---   - Orders (live order status changes)
+-- Enables live subscriptions on Dashboard, Driver Queue,
+-- Orders, and Payments pages.
+-- If a table is already in the publication, Supabase will
+-- return a harmless "already exists" notice — not an error.
 -- =============================================================
 
 ALTER PUBLICATION supabase_realtime ADD TABLE public.users;
@@ -145,14 +154,12 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.payments;
 
 -- =============================================================
 -- SECTION 4: STORAGE BUCKETS & POLICIES
--- Two buckets:
---   driver-documents  — truck photos, license photos, CCP receipts
---   receipts          — standalone payment receipt uploads
--- Both are public so the admin dashboard can display images
--- directly via their storage URLs without auth headers.
+-- driver-documents  — truck photos, license photos, CCP receipts
+-- receipts          — standalone payment receipt uploads
+-- Both public so the dashboard can display images without auth.
+-- ON CONFLICT DO NOTHING makes bucket INSERTs safe to re-run.
 -- =============================================================
 
--- Create buckets (safe to re-run: INSERT … ON CONFLICT DO NOTHING)
 INSERT INTO storage.buckets (id, name, public)
   VALUES ('driver-documents', 'driver-documents', true)
   ON CONFLICT (id) DO NOTHING;
@@ -161,33 +168,30 @@ INSERT INTO storage.buckets (id, name, public)
   VALUES ('receipts', 'receipts', true)
   ON CONFLICT (id) DO NOTHING;
 
--- RLS on storage.objects
+-- Enable RLS on storage objects (idempotent)
 ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
 
--- Allow anon to upload files into driver-documents
+-- driver-documents policies
 CREATE POLICY "anon_upload_driver_documents"
   ON storage.objects FOR INSERT TO anon
   WITH CHECK (bucket_id = 'driver-documents');
 
--- Allow anon to read files from driver-documents
 CREATE POLICY "anon_read_driver_documents"
   ON storage.objects FOR SELECT TO anon
   USING (bucket_id = 'driver-documents');
 
--- Allow anon to upload files into receipts
+CREATE POLICY "anon_update_driver_documents"
+  ON storage.objects FOR UPDATE TO anon
+  USING (bucket_id = 'driver-documents');
+
+-- receipts policies
 CREATE POLICY "anon_upload_receipts"
   ON storage.objects FOR INSERT TO anon
   WITH CHECK (bucket_id = 'receipts');
 
--- Allow anon to read files from receipts
 CREATE POLICY "anon_read_receipts"
   ON storage.objects FOR SELECT TO anon
   USING (bucket_id = 'receipts');
-
--- Allow anon to update/delete their own uploaded files (optional)
-CREATE POLICY "anon_update_driver_documents"
-  ON storage.objects FOR UPDATE TO anon
-  USING (bucket_id = 'driver-documents');
 
 CREATE POLICY "anon_update_receipts"
   ON storage.objects FOR UPDATE TO anon
