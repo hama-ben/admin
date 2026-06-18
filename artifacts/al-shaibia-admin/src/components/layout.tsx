@@ -12,20 +12,22 @@ import {
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
-
-const NAV_ITEMS = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/users", label: "Users", icon: Users },
-  { href: "/orders", label: "Orders", icon: Package },
-  { href: "/driver-queue", label: "Driver Queue", icon: Truck },
-  { href: "/payments", label: "Payments — مدفوعات", icon: CreditCard },
-  { href: "/announcements", label: "Announcements", icon: Megaphone },
-  { href: "/disputes", label: "Disputes", icon: AlertTriangle },
-];
+import { usePendingDisputeCount } from "@/hooks/use-pending-disputes";
 
 export function Sidebar() {
   const [location] = useLocation();
   const { user, signOut } = useAuth();
+  const pendingDisputes = usePendingDisputeCount();
+
+  const NAV_ITEMS = [
+    { href: "/", label: "Dashboard", icon: LayoutDashboard, badge: null },
+    { href: "/users", label: "Users", icon: Users, badge: null },
+    { href: "/orders", label: "Orders", icon: Package, badge: null },
+    { href: "/driver-queue", label: "Driver Queue", icon: Truck, badge: null },
+    { href: "/payments", label: "Payments — مدفوعات", icon: CreditCard, badge: null },
+    { href: "/announcements", label: "Announcements", icon: Megaphone, badge: null },
+    { href: "/disputes", label: "Disputes", icon: AlertTriangle, badge: pendingDisputes > 0 ? pendingDisputes : null },
+  ];
 
   return (
     <aside className="fixed inset-y-0 left-0 w-[260px] bg-sidebar border-r border-sidebar-border text-sidebar-foreground flex flex-col z-20">
@@ -52,8 +54,13 @@ export function Sidebar() {
                   : "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
               )}
             >
-              <item.icon className="w-5 h-5" />
-              {item.label}
+              <item.icon className="w-5 h-5 shrink-0" />
+              <span className="flex-1">{item.label}</span>
+              {item.badge !== null && (
+                <span className="ml-auto min-w-[20px] h-5 px-1.5 rounded-full bg-amber-500 text-white text-xs font-bold flex items-center justify-center">
+                  {item.badge}
+                </span>
+              )}
             </Link>
           );
         })}

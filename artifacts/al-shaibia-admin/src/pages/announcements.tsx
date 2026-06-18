@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase, type Announcement, type BadgeType, type TargetAudience } from "@/lib/supabase";
+import { supabase, type Announcement } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,27 +15,28 @@ import { useToast } from "@/hooks/use-toast";
 import { Megaphone, Send, Users, Truck, Globe } from "lucide-react";
 import { formatDate } from "@/lib/constants";
 
-const formSchema = z.object({
-  title: z.string().min(1, "Title is required"),
-  badge_type: z.enum(["Info", "Warning", "Success", "Promo"] as const),
-  target_audience: z.enum(["Everyone", "Drivers", "Consumers"] as const),
-  message: z.string().min(1, "Message is required"),
-});
-
-type FormValues = z.infer<typeof formSchema>;
-
-const BADGE_COLORS: Record<BadgeType, string> = {
+const BADGE_STYLES: Record<string, string> = {
   Info: "bg-blue-500/20 text-blue-400 border-blue-500/20",
   Warning: "bg-amber-500/20 text-amber-400 border-amber-500/20",
   Success: "bg-green-500/20 text-green-400 border-green-500/20",
   Promo: "bg-purple-500/20 text-purple-400 border-purple-500/20",
 };
 
-const AUDIENCE_ICONS: Record<TargetAudience, typeof Globe> = {
+const AUDIENCE_ICONS: Record<string, typeof Globe> = {
   Everyone: Globe,
   Drivers: Truck,
   Consumers: Users,
+  all: Globe,
 };
+
+const formSchema = z.object({
+  title: z.string().min(1, "Title is required"),
+  badge_text: z.enum(["Info", "Warning", "Success", "Promo"] as const),
+  target_audience: z.enum(["Everyone", "Drivers", "Consumers"] as const),
+  content: z.string().min(1, "Message is required"),
+});
+
+type FormValues = z.infer<typeof formSchema>;
 
 export default function AnnouncementsPage() {
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
@@ -47,14 +48,23 @@ export default function AnnouncementsPage() {
     resolver: zodResolver(formSchema),
     defaultValues: {
       title: "",
-      badge_type: "Info",
+      badge_text: "Info",
       target_audience: "Everyone",
-      message: "",
+      content: "",
     },
   });
 
   useEffect(() => {
     fetchAnnouncements();
+
+    const channel = supabase
+      .channel("announcements-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "announcements" }, (payload) => {
+        setAnnouncements((prev) => [payload.new as Announcement, ...prev]);
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   async function fetchAnnouncements() {
@@ -64,7 +74,6 @@ export default function AnnouncementsPage() {
         .from("announcements")
         .select("*")
         .order("created_at", { ascending: false });
-
       if (error) throw error;
       setAnnouncements(data || []);
     } catch (err: any) {
@@ -79,16 +88,14 @@ export default function AnnouncementsPage() {
     try {
       const { error } = await supabase.from("announcements").insert({
         title: values.title,
-        badge_type: values.badge_type,
+        badge_text: values.badge_text,
         target_audience: values.target_audience,
-        message: values.message,
+        content: values.content,
+        is_active: true,
       });
-
       if (error) throw error;
-
-      toast({ title: "Announcement published", description: "Your announcement is now live for the selected audience." });
+      toast({ title: "Announcement published", description: "Your announcement is now live." });
       form.reset();
-      fetchAnnouncements();
     } catch (err: any) {
       toast({ title: "Failed to publish", description: err.message, variant: "destructive" });
     } finally {
@@ -103,7 +110,6 @@ export default function AnnouncementsPage() {
         <p className="text-muted-foreground mt-1">Publish updates to drivers and consumers on the platform.</p>
       </div>
 
-      {/* Create Form */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-lg">
@@ -120,7 +126,7 @@ export default function AnnouncementsPage() {
                   <FormItem>
                     <FormLabel>Title</FormLabel>
                     <FormControl>
-                      <Input placeholder="Announcement title..." {...field} data-testid="input-announcement-title" />
+                      <Input placeholder="Announcement title..." {...field} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -130,13 +136,13 @@ export default function AnnouncementsPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                 <FormField
                   control={form.control}
-                  name="badge_type"
+                  name="badge_text"
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Badge Type</FormLabel>
                       <Select onValueChange={field.onChange} defaultValue={field.value}>
                         <FormControl>
-                          <SelectTrigger data-testid="select-badge-type">
+                          <SelectTrigger>
                             <SelectValue placeholder="Select badge type" />
                           </SelectTrigger>
                         </FormControl>
@@ -160,7 +166,7 @@ export default function AnnouncementsPage() {
                       <FormLabel>Target Audience</FormLabel>
                       <Select onValueChange={field.onChange} defaultValue={field.value}>
                         <FormControl>
-                          <SelectTrigger data-testid="select-target-audience">
+                          <SelectTrigger>
                             <SelectValue placeholder="Select audience" />
                           </SelectTrigger>
                         </FormControl>
@@ -178,7 +184,7 @@ export default function AnnouncementsPage() {
 
               <FormField
                 control={form.control}
-                name="message"
+                name="content"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Message</FormLabel>
@@ -187,7 +193,6 @@ export default function AnnouncementsPage() {
                         placeholder="Write your announcement message here..."
                         className="min-h-[120px] resize-none"
                         {...field}
-                        data-testid="textarea-announcement-message"
                       />
                     </FormControl>
                     <FormMessage />
@@ -195,7 +200,7 @@ export default function AnnouncementsPage() {
                 )}
               />
 
-              <Button type="submit" disabled={submitting} className="gap-2" data-testid="button-publish-announcement">
+              <Button type="submit" disabled={submitting} className="gap-2">
                 <Send className="w-4 h-4" />
                 {submitting ? "Publishing..." : "Publish Announcement"}
               </Button>
@@ -204,10 +209,8 @@ export default function AnnouncementsPage() {
         </CardContent>
       </Card>
 
-      {/* Past Announcements */}
       <div>
         <h2 className="text-xl font-semibold mb-4">Past Announcements</h2>
-
         {loading ? (
           <div className="space-y-4">
             {Array(3).fill(0).map((_, i) => (
@@ -219,7 +222,6 @@ export default function AnnouncementsPage() {
                   </div>
                   <Skeleton className="h-5 w-48" />
                   <Skeleton className="h-4 w-full" />
-                  <Skeleton className="h-4 w-3/4" />
                 </CardContent>
               </Card>
             ))}
@@ -232,15 +234,18 @@ export default function AnnouncementsPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            {announcements.map(ann => {
-              const AudienceIcon = AUDIENCE_ICONS[ann.target_audience];
+            {announcements.map((ann) => {
+              const badgeStyle = BADGE_STYLES[ann.badge_text ?? "Info"] ?? BADGE_STYLES["Info"];
+              const AudienceIcon = AUDIENCE_ICONS[ann.target_audience] ?? Globe;
               return (
-                <Card key={ann.id} className="border-border bg-card" data-testid={`card-announcement-${ann.id}`}>
+                <Card key={ann.id} className="border-border bg-card">
                   <CardContent className="p-5">
                     <div className="flex flex-wrap items-center gap-2 mb-3">
-                      <Badge variant="outline" className={BADGE_COLORS[ann.badge_type]}>
-                        {ann.badge_type}
-                      </Badge>
+                      {ann.badge_text && (
+                        <Badge variant="outline" className={badgeStyle}>
+                          {ann.badge_text}
+                        </Badge>
+                      )}
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
                         <AudienceIcon className="w-3.5 h-3.5" />
                         {ann.target_audience}
@@ -248,7 +253,7 @@ export default function AnnouncementsPage() {
                       <span className="text-xs text-muted-foreground ml-auto">{formatDate(ann.created_at)}</span>
                     </div>
                     <h3 className="font-semibold text-base mb-2">{ann.title}</h3>
-                    <p className="text-sm text-muted-foreground leading-relaxed">{ann.message}</p>
+                    <p className="text-sm text-muted-foreground leading-relaxed">{ann.content}</p>
                   </CardContent>
                 </Card>
               );
