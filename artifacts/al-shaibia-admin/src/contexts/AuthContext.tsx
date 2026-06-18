@@ -1,56 +1,45 @@
 import { createContext, useContext, useEffect, useState } from "react";
-
-interface AuthUser {
-  id: string;
-  email?: string | null;
-  firstName?: string | null;
-  lastName?: string | null;
-  profileImageUrl?: string | null;
-}
+import type { Session, User } from "@supabase/supabase-js";
+import { supabase } from "@/lib/supabase";
 
 interface AuthContextValue {
-  user: AuthUser | null;
+  session: Session | null;
+  user: User | null;
   loading: boolean;
-  isAuthenticated: boolean;
-  signOut: () => void;
+  signOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue>({
+  session: null,
   user: null,
   loading: true,
-  isAuthenticated: false,
-  signOut: () => {},
+  signOut: async () => {},
 });
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/auth/user", { credentials: "include" })
-      .then((res) => {
-        if (res.status === 401) return null;
-        if (!res.ok) throw new Error("Failed to fetch user");
-        return res.json();
-      })
-      .then((data) => {
-        setUser(data);
-      })
-      .catch(() => {
-        setUser(null);
-      })
-      .finally(() => {
-        setLoading(false);
-      });
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setLoading(false);
+    });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => {
+      setSession(s);
+    });
+
+    return () => listener.subscription.unsubscribe();
   }, []);
 
-  const signOut = () => {
-    window.location.href = "/api/logout";
+  const signOut = async () => {
+    await supabase.auth.signOut();
   };
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, isAuthenticated: !!user, signOut }}
+      value={{ session, user: session?.user ?? null, loading, signOut }}
     >
       {children}
     </AuthContext.Provider>

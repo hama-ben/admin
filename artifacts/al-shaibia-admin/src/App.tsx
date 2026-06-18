@@ -17,7 +17,7 @@ import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 const queryClient = new QueryClient();
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
-  const { isAuthenticated, loading } = useAuth();
+  const { session, loading } = useAuth();
 
   if (loading) {
     return (
@@ -27,7 +27,7 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
     );
   }
 
-  if (!isAuthenticated) {
+  if (!session) {
     return <Redirect to="/login" />;
   }
 
@@ -35,7 +35,7 @@ function ProtectedRoute({ component: Component }: { component: React.ComponentTy
 }
 
 function Router() {
-  const { isAuthenticated, loading } = useAuth();
+  const { session, loading } = useAuth();
 
   if (loading) {
     return (
@@ -48,7 +48,7 @@ function Router() {
   return (
     <Switch>
       <Route path="/login">
-        {isAuthenticated ? <Redirect to="/" /> : <LoginPage />}
+        {session ? <Redirect to="/" /> : <LoginPage />}
       </Route>
 
       <Route path="/">
