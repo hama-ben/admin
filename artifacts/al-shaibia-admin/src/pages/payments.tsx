@@ -272,7 +272,7 @@ export default function PaymentsPage() {
               <CardContent className="p-5 flex flex-col gap-4 flex-1">
                 <div className="flex justify-between items-start">
                   <div>
-                    <p className="font-semibold text-base">{(payment as any).driver?.full_name || "Unknown Driver"}</p>
+                    <p className="font-semibold text-base">{(payment as any).driver?.name || "Unknown Driver"}</p>
                     <p className="text-sm text-muted-foreground">{(payment as any).driver?.phone}</p>
                   </div>
                   <Badge variant="outline" className={getTabBadge(payment.status)}>

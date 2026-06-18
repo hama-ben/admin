@@ -2,7 +2,9 @@ modules = ["nodejs-24", "postgresql-16"]
 
 [deployment]
 router = "application"
-deploymentTarget = "autoscale"
+deploymentTarget = "static"
+build = ["sh", "-c", "BASE_PATH=/ pnpm --filter @workspace/al-shaibia-admin run build"]
+publicDir = "artifacts/al-shaibia-admin/dist/public"
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]
@@ -67,6 +69,10 @@ externalPort = 3001
 
 [[ports]]
 localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 8080
 externalPort = 80
 
 [[ports]]

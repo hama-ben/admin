@@ -40,13 +40,13 @@ export default function UsersPage() {
         let query = supabase.from("users").select("*", { count: "exact" });
         
         if (roleTab !== "all") {
-          query = query.eq("role", roleTab);
+          query = query.eq("user_type", roleTab);
         }
         if (wilayaFilter !== "all") {
           query = query.eq("wilaya", wilayaFilter);
         }
         if (debouncedSearch) {
-          query = query.or(`full_name.ilike.%${debouncedSearch}%,phone.ilike.%${debouncedSearch}%`);
+          query = query.or(`name.ilike.%${debouncedSearch}%,phone.ilike.%${debouncedSearch}%`);
         }
 
         query = query.order("created_at", { ascending: false }).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
@@ -142,17 +142,17 @@ export default function UsersPage() {
             ) : (
               users.map(user => (
                 <TableRow key={user.id}>
-                  <TableCell className="font-medium">{user.full_name}</TableCell>
+                  <TableCell className="font-medium">{user.name}</TableCell>
                   <TableCell>{user.phone}</TableCell>
                   <TableCell>
-                    <Badge variant={user.role === 'driver' ? 'default' : 'secondary'} className="capitalize">
-                      {user.role}
+                    <Badge variant="secondary" className="capitalize">
+                      {user.user_type}
                     </Badge>
                   </TableCell>
                   <TableCell>{user.wilaya}</TableCell>
                   <TableCell>
-                    <Badge variant={user.is_verified ? 'default' : 'outline'} className={user.is_verified ? 'bg-green-500/20 text-green-500 hover:bg-green-500/30 border-green-500/20' : ''}>
-                      {user.is_verified ? 'Yes' : 'No'}
+                    <Badge variant={user.account_status === 'active' ? 'default' : 'outline'} className={user.account_status === 'active' ? 'bg-green-500/20 text-green-500 hover:bg-green-500/30 border-green-500/20' : ''}>
+                      {user.account_status || 'active'}
                     </Badge>
                   </TableCell>
                   <TableCell>{formatDate(user.created_at)}</TableCell>

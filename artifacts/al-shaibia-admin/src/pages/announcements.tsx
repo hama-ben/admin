@@ -91,7 +91,6 @@ export default function AnnouncementsPage() {
         badge_text: values.badge_text,
         target_audience: values.target_audience,
         content: values.content,
-        is_active: true,
       });
       if (error) throw error;
       toast({ title: "Announcement published", description: "Your announcement is now live." });

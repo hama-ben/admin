@@ -51,7 +51,7 @@ function Router() {
         {session ? <Redirect to="/" /> : <LoginPage />}
       </Route>
 
-      <Route path="/">
+      <Route>
         <AppLayout>
           <Switch>
             <Route path="/" component={() => <ProtectedRoute component={DashboardPage} />} />

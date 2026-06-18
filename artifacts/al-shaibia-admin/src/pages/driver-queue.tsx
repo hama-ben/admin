@@ -133,7 +133,7 @@ export default function DriverQueuePage() {
             <Card key={driver.user_id} className="flex flex-col border-border bg-card">
               <CardHeader className="pb-3 border-b border-border/50">
                 <CardTitle className="flex justify-between items-center text-lg">
-                  <span>{driver.users?.full_name}</span>
+                  <span>{driver.users?.name}</span>
                   <span className="text-xs font-normal text-muted-foreground px-2 py-1 bg-muted rounded-full">
                     {driver.users?.wilaya}
                   </span>
