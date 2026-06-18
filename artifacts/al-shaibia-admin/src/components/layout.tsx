@@ -16,7 +16,7 @@ import { usePendingDisputeCount } from "@/hooks/use-pending-disputes";
 
 export function Sidebar() {
   const [location] = useLocation();
-  const { user, signOut } = useAuth();
+  const { user, signOut, isAuthenticated } = useAuth();
   const pendingDisputes = usePendingDisputeCount();
 
   const NAV_ITEMS = [

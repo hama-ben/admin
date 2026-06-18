@@ -1,0 +1,1 @@
+- [Al-Shaibia auth architecture](al-shaibia-auth.md) — Replit Auth replaces Supabase auth; Supabase client kept for data queries only; API server on 3001, Vite on 5000.
