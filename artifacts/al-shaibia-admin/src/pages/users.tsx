@@ -1,15 +1,25 @@
 import { useEffect, useState } from "react";
 import { supabase, type User } from "@/lib/supabase";
-import { ALGERIAN_WILAYAS, formatDate } from "@/lib/constants";
+import { ALGERIAN_WILAYAS } from "@/lib/constants";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+
+const USER_TYPE_DRIVER = "سائق";
+const USER_TYPE_CONSUMER = "مستهلك";
+
+function formatExpiry(dateString?: string) {
+  if (!dateString) return "—";
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "2-digit", year: "numeric" }).format(date);
+}
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
@@ -30,7 +40,7 @@ export default function UsersPage() {
   }, [search]);
 
   useEffect(() => {
-    setPage(0); // Reset page on filter change
+    setPage(0);
   }, [roleTab, debouncedSearch, wilayaFilter]);
 
   useEffect(() => {
@@ -38,10 +48,13 @@ export default function UsersPage() {
       setLoading(true);
       try {
         let query = supabase.from("users").select("*", { count: "exact" });
-        
-        if (roleTab !== "all") {
-          query = query.eq("user_type", roleTab);
+
+        if (roleTab === "driver") {
+          query = query.eq("user_type", USER_TYPE_DRIVER);
+        } else if (roleTab === "consumer") {
+          query = query.eq("user_type", USER_TYPE_CONSUMER);
         }
+
         if (wilayaFilter !== "all") {
           query = query.eq("wilaya", wilayaFilter);
         }
@@ -49,12 +62,13 @@ export default function UsersPage() {
           query = query.or(`name.ilike.%${debouncedSearch}%,phone.ilike.%${debouncedSearch}%`);
         }
 
-        query = query.order("created_at", { ascending: false }).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
+        query = query
+          .order("subscription_expires_at", { ascending: false, nullsFirst: false })
+          .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
 
         const { data, count, error } = await query;
-
         if (error) throw error;
-        
+
         setUsers(data || []);
         if (count !== null) setTotalCount(count);
       } catch (err: any) {
@@ -68,6 +82,26 @@ export default function UsersPage() {
     fetchUsers();
   }, [roleTab, debouncedSearch, wilayaFilter, page, toast]);
 
+  function getRoleBadge(userType: string) {
+    if (userType === USER_TYPE_DRIVER) {
+      return <Badge variant="default" className="bg-primary/20 text-primary border-primary/30">سائق</Badge>;
+    }
+    return <Badge variant="secondary">مستهلك</Badge>;
+  }
+
+  function getStatusBadge(status?: string) {
+    switch (status) {
+      case "active":
+        return <Badge variant="outline" className="bg-green-500/20 text-green-500 border-green-500/30">Active</Badge>;
+      case "pending":
+        return <Badge variant="outline" className="bg-amber-500/20 text-amber-500 border-amber-500/30">Pending</Badge>;
+      case "rejected":
+        return <Badge variant="outline" className="bg-red-500/20 text-red-500 border-red-500/30">Rejected</Badge>;
+      default:
+        return <Badge variant="outline">{status || "—"}</Badge>;
+    }
+  }
+
   return (
     <div className="p-8 space-y-6 animate-in fade-in duration-500 flex flex-col h-full">
       <div>
@@ -76,32 +110,32 @@ export default function UsersPage() {
       </div>
 
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center justify-between">
-        <Tabs value={roleTab} onValueChange={setRoleTab} className="w-[400px]">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="all">All</TabsTrigger>
-            <TabsTrigger value="consumer">Consumers</TabsTrigger>
-            <TabsTrigger value="driver">Drivers</TabsTrigger>
+        <Tabs value={roleTab} onValueChange={setRoleTab} className="w-auto">
+          <TabsList>
+            <TabsTrigger value="all">All ({totalCount})</TabsTrigger>
+            <TabsTrigger value="consumer">مستهلك</TabsTrigger>
+            <TabsTrigger value="driver">سائق</TabsTrigger>
           </TabsList>
         </Tabs>
 
-        <div className="flex gap-4">
+        <div className="flex gap-3">
           <div className="relative w-64">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input 
-              placeholder="Search name or phone..." 
+            <Input
+              placeholder="Search name or phone..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="pl-9"
             />
           </div>
-          
+
           <Select value={wilayaFilter} onValueChange={setWilayaFilter}>
             <SelectTrigger className="w-[200px]">
               <SelectValue placeholder="All Wilayas" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Wilayas</SelectItem>
-              {ALGERIAN_WILAYAS.map(w => (
+              {ALGERIAN_WILAYAS.map((w) => (
                 <SelectItem key={w} value={w}>{w}</SelectItem>
               ))}
             </SelectContent>
@@ -117,20 +151,17 @@ export default function UsersPage() {
               <TableHead>Phone</TableHead>
               <TableHead>Role</TableHead>
               <TableHead>Wilaya</TableHead>
-              <TableHead>Verified</TableHead>
-              <TableHead>Joined Date</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Subscription Expires</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {loading ? (
               Array(10).fill(0).map((_, i) => (
                 <TableRow key={i}>
-                  <TableCell><Skeleton className="h-5 w-32" /></TableCell>
-                  <TableCell><Skeleton className="h-5 w-24" /></TableCell>
-                  <TableCell><Skeleton className="h-5 w-16" /></TableCell>
-                  <TableCell><Skeleton className="h-5 w-20" /></TableCell>
-                  <TableCell><Skeleton className="h-5 w-12" /></TableCell>
-                  <TableCell><Skeleton className="h-5 w-24" /></TableCell>
+                  {Array(6).fill(0).map((__, j) => (
+                    <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>
+                  ))}
                 </TableRow>
               ))
             ) : users.length === 0 ? (
@@ -140,22 +171,14 @@ export default function UsersPage() {
                 </TableCell>
               </TableRow>
             ) : (
-              users.map(user => (
+              users.map((user) => (
                 <TableRow key={user.id}>
                   <TableCell className="font-medium">{user.name}</TableCell>
-                  <TableCell>{user.phone}</TableCell>
-                  <TableCell>
-                    <Badge variant="secondary" className="capitalize">
-                      {user.user_type}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{user.wilaya}</TableCell>
-                  <TableCell>
-                    <Badge variant={user.account_status === 'active' ? 'default' : 'outline'} className={user.account_status === 'active' ? 'bg-green-500/20 text-green-500 hover:bg-green-500/30 border-green-500/20' : ''}>
-                      {user.account_status || 'active'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{formatDate(user.created_at)}</TableCell>
+                  <TableCell className="font-mono text-sm">{user.phone || "—"}</TableCell>
+                  <TableCell>{getRoleBadge(user.user_type)}</TableCell>
+                  <TableCell>{user.wilaya || "—"}</TableCell>
+                  <TableCell>{getStatusBadge(user.account_status)}</TableCell>
+                  <TableCell className="text-sm text-muted-foreground">{formatExpiry(user.subscription_expires_at)}</TableCell>
                 </TableRow>
               ))
             )}
@@ -165,13 +188,13 @@ export default function UsersPage() {
 
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">
-          Showing {users.length > 0 ? page * PAGE_SIZE + 1 : 0} to {Math.min((page + 1) * PAGE_SIZE, totalCount)} of {totalCount} results
+          Showing {users.length > 0 ? page * PAGE_SIZE + 1 : 0}–{Math.min((page + 1) * PAGE_SIZE, totalCount)} of {totalCount} users
         </p>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0 || loading}>
+          <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(0, p - 1))} disabled={page === 0 || loading}>
             <ChevronLeft className="w-4 h-4 mr-1" /> Previous
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setPage(p => p + 1)} disabled={(page + 1) * PAGE_SIZE >= totalCount || loading}>
+          <Button variant="outline" size="sm" onClick={() => setPage((p) => p + 1)} disabled={(page + 1) * PAGE_SIZE >= totalCount || loading}>
             Next <ChevronRight className="w-4 h-4 ml-1" />
           </Button>
         </div>

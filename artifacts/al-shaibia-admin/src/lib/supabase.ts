@@ -11,11 +11,10 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-export type DriverStatus = "pending" | "approved" | "rejected";
+export type DriverStatus = "pending" | "approved" | "rejected" | "active";
 export type PaymentStatus = "pending" | "approved" | "rejected";
 export type BadgeType = "Info" | "Warning" | "Success" | "Promo";
 export type TargetAudience = "Everyone" | "Drivers" | "Consumers";
-export type OrderStatus = "Pending" | "Completed" | "Cancelled" | "Rejected";
 export type DisputeStatus = "pending" | "resolved" | "dismissed";
 
 export interface User {
@@ -27,41 +26,47 @@ export interface User {
   wilaya?: string;
   commune?: string;
   account_status?: string;
-  created_at?: string;
+  subscription_expires_at?: string;
+  free_trial_claimed?: boolean;
 }
 
-export interface Driver {
-  user_id: string;
-  truck_photo_url: string | null;
-  license_photo_url: string | null;
-  ccp_receipt_url: string | null;
-  ccp_status: PaymentStatus | null;
-  status: DriverStatus;
-  is_online: boolean;
-  users?: User;
+export interface DriverDetails {
+  driver_id: string;
+  wilaya?: string;
+  commune?: string;
+  truck_front_photo_url?: string | null;
+  driver_license_url?: string | null;
+  truck_video_url?: string | null;
+  truck_side_photo_url?: string | null;
+  is_legacy_driver?: boolean;
+}
+
+export interface PendingDriver extends User {
+  driver_details?: DriverDetails[];
 }
 
 export interface Order {
   id: string;
-  customer_id: string;
+  user_id: string;
   driver_id: string | null;
-  details: string;
-  price: number;
-  status: OrderStatus;
-  wilaya: string;
+  water_volume: string;
+  barrel_count: number;
+  total_price: number;
+  latitude: string;
+  longitude: string;
+  status: string;
   created_at: string;
-  customer?: User;
-  driver?: User;
+  customer?: User | null;
+  driver?: User | null;
 }
 
-export interface Payment {
+export interface SubscriptionPayment {
   id: string;
   driver_id: string;
-  amount: number;
-  receipt_url: string | null;
   status: PaymentStatus;
   created_at: string;
   driver?: User;
+  [key: string]: any;
 }
 
 export interface Announcement {
@@ -72,6 +77,7 @@ export interface Announcement {
   content: string;
   is_active: boolean;
   created_at: string;
+  target_user_id?: string | null;
 }
 
 export interface RatingDispute {
@@ -95,7 +101,20 @@ export interface DashboardStats {
   pendingVerifications: number;
 }
 
-export interface SignupDataPoint {
-  date: string;
-  count: number;
+export async function insertTargetedAnnouncement(
+  title: string,
+  content: string,
+  badgeText: BadgeType,
+  targetUserId: string
+) {
+  const payload: any = {
+    title,
+    content,
+    target_audience: "Drivers",
+    badge_text: badgeText,
+    is_active: true,
+    target_user_id: targetUserId,
+  };
+  const { error } = await supabase.from("announcements").insert(payload);
+  return error;
 }

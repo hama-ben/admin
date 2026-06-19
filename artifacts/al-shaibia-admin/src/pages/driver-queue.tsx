@@ -1,43 +1,57 @@
 import { useEffect, useState } from "react";
-import { supabase, type Driver } from "@/lib/supabase";
+import { supabase, type PendingDriver, type DriverDetails, insertTargetedAnnouncement } from "@/lib/supabase";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Check, X, CreditCard, Image as ImageIcon } from "lucide-react";
+import { Check, X, Image as ImageIcon } from "lucide-react";
 
 export default function DriverQueuePage() {
-  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [drivers, setDrivers] = useState<(PendingDriver & { details?: DriverDetails })[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
     fetchPendingDrivers();
 
     const channel = supabase
-      .channel('drivers-queue')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'drivers', filter: 'status=eq.pending' }, () => {
+      .channel("driver-queue-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () => {
         fetchPendingDrivers();
       })
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   async function fetchPendingDrivers() {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("drivers")
-        .select("*, users!inner(*)")
-        .eq("status", "pending");
+      const { data: pendingUsers, error: usersError } = await supabase
+        .from("users")
+        .select("id, name, phone, wilaya, commune, account_status, user_type, subscription_expires_at")
+        .eq("user_type", "سائق")
+        .eq("account_status", "pending");
 
-      if (error) throw error;
-      setDrivers(data || []);
+      if (usersError) throw usersError;
+      if (!pendingUsers || pendingUsers.length === 0) {
+        setDrivers([]);
+        return;
+      }
+
+      const userIds = pendingUsers.map((u) => u.id);
+      const { data: detailsData } = await supabase
+        .from("driver_details")
+        .select("*")
+        .in("driver_id", userIds);
+
+      const detailsMap = new Map<string, DriverDetails>();
+      (detailsData || []).forEach((d) => detailsMap.set(d.driver_id, d));
+
+      setDrivers(pendingUsers.map((u) => ({ ...u, details: detailsMap.get(u.id) })));
     } catch (err: any) {
       console.error("Failed to fetch driver queue", err);
       toast({ title: "Error fetching queue", description: err.message, variant: "destructive" });
@@ -46,62 +60,93 @@ export default function DriverQueuePage() {
     }
   }
 
-  const handleAction = async (userId: string, status: "approved" | "rejected") => {
+  async function handleApprove(driverId: string) {
+    setActionLoading(driverId);
     try {
-      const { error } = await supabase
-        .from("drivers")
-        .update({ status })
-        .eq("user_id", userId);
+      const { error: updateError } = await supabase
+        .from("users")
+        .update({ account_status: "active" })
+        .eq("id", driverId);
 
-      if (error) throw error;
-      
-      toast({ 
-        title: `Driver ${status}`, 
-        description: `Successfully ${status} the driver application.` 
-      });
-      
-      setDrivers(drivers.filter(d => d.user_id !== userId));
+      if (updateError) throw updateError;
+
+      const annError = await insertTargetedAnnouncement(
+        "تم قبولك بيننا",
+        "مرحبا بك",
+        "Success",
+        driverId
+      );
+
+      if (annError) {
+        console.warn("Announcement insert warning:", annError.message);
+      }
+
+      toast({ title: "Driver Approved", description: "The driver has been approved and notified." });
+      setDrivers((prev) => prev.filter((d) => d.id !== driverId));
     } catch (err: any) {
       toast({ title: "Action failed", description: err.message, variant: "destructive" });
+    } finally {
+      setActionLoading(null);
     }
-  };
+  }
 
-  const handleCCPAction = async (userId: string, ccp_status: "approved" | "rejected") => {
+  async function handleReject(driverId: string) {
+    setActionLoading(driverId);
     try {
-      const { error } = await supabase
-        .from("drivers")
-        .update({ ccp_status })
-        .eq("user_id", userId);
+      const { error: updateError } = await supabase
+        .from("users")
+        .update({ account_status: "rejected" })
+        .eq("id", driverId);
 
-      if (error) throw error;
-      
-      toast({ 
-        title: `CCP Receipt ${ccp_status}`, 
-        description: `Successfully ${ccp_status} the CCP payment receipt.` 
-      });
-      
-      setDrivers(drivers.map(d => d.user_id === userId ? { ...d, ccp_status } : d));
+      if (updateError) throw updateError;
+
+      const annError = await insertTargetedAnnouncement(
+        "تم رفض طلبك",
+        "عذراً، لم يتم قبول طلبك. يرجى التواصل معنا عبر الفيسبوك: https://www.facebook.com/profile.php?id=61590856328769",
+        "Warning",
+        driverId
+      );
+
+      if (annError) {
+        console.warn("Announcement insert warning:", annError.message);
+      }
+
+      toast({ title: "Driver Rejected", description: "The driver has been rejected." });
+      setDrivers((prev) => prev.filter((d) => d.id !== driverId));
     } catch (err: any) {
       toast({ title: "Action failed", description: err.message, variant: "destructive" });
+    } finally {
+      setActionLoading(null);
     }
-  };
+  }
+
+  function PhotoBox({ url, label }: { url?: string | null; label: string }) {
+    return (
+      <div
+        className="border rounded-md overflow-hidden aspect-video relative group cursor-pointer"
+        onClick={() => url && setSelectedImage(url)}
+      >
+        {url ? (
+          <>
+            <img src={url} alt={label} className="object-cover w-full h-full" />
+            <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+              <ImageIcon className="w-6 h-6 text-white" />
+            </div>
+          </>
+        ) : (
+          <div className="w-full h-full bg-muted flex items-center justify-center text-xs text-muted-foreground text-center p-2">
+            No Image
+          </div>
+        )}
+        <div className="absolute bottom-0 inset-x-0 bg-background/80 text-[10px] uppercase font-bold text-center py-1">
+          {label}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-8 space-y-6 animate-in fade-in duration-500">
-      <div className="bg-primary/10 border border-primary/20 rounded-lg p-6 flex flex-col md:flex-row items-center justify-between">
-        <div>
-          <h2 className="text-lg font-bold text-primary flex items-center gap-2">
-            <CreditCard className="w-5 h-5" /> Official CCP Account for Verification
-          </h2>
-          <p className="text-muted-foreground mt-1">Drivers deposit verification fees here.</p>
-        </div>
-        <div className="mt-4 md:mt-0 bg-background/50 px-6 py-3 rounded border border-border">
-          <span className="font-mono text-2xl font-bold tracking-widest text-primary">
-            00799999001 <span className="text-amber-500">1234567890</span>
-          </span>
-        </div>
-      </div>
-
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Driver Queue</h1>
         <p className="text-muted-foreground mt-2">Review and approve pending driver applications.</p>
@@ -110,12 +155,13 @@ export default function DriverQueuePage() {
       {loading ? (
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
           {Array(6).fill(0).map((_, i) => (
-            <Card key={i} className="overflow-hidden">
-              <CardContent className="p-6">
-                <Skeleton className="h-6 w-3/4 mb-4" />
-                <div className="space-y-2">
-                  <Skeleton className="h-20 w-full" />
-                  <Skeleton className="h-20 w-full" />
+            <Card key={i}>
+              <CardContent className="p-6 space-y-4">
+                <Skeleton className="h-6 w-3/4" />
+                <Skeleton className="h-4 w-1/2" />
+                <div className="grid grid-cols-2 gap-3">
+                  <Skeleton className="h-24 w-full" />
+                  <Skeleton className="h-24 w-full" />
                 </div>
               </CardContent>
             </Card>
@@ -129,102 +175,51 @@ export default function DriverQueuePage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-          {drivers.map(driver => (
-            <Card key={driver.user_id} className="flex flex-col border-border bg-card">
+          {drivers.map((driver) => (
+            <Card key={driver.id} className="flex flex-col border-border bg-card">
               <CardHeader className="pb-3 border-b border-border/50">
                 <CardTitle className="flex justify-between items-center text-lg">
-                  <span>{driver.users?.name}</span>
-                  <span className="text-xs font-normal text-muted-foreground px-2 py-1 bg-muted rounded-full">
-                    {driver.users?.wilaya}
-                  </span>
+                  <span>{driver.name}</span>
+                  {driver.wilaya && (
+                    <span className="text-xs font-normal text-muted-foreground px-2 py-1 bg-muted rounded-full">
+                      {driver.wilaya}
+                    </span>
+                  )}
                 </CardTitle>
-                <div className="text-sm text-muted-foreground">{driver.users?.phone}</div>
+                <div className="text-sm text-muted-foreground font-mono">{driver.phone}</div>
               </CardHeader>
-              <CardContent className="p-4 space-y-4 flex-1">
-                <div className="grid grid-cols-2 gap-4">
-                  <div 
-                    className="border rounded-md overflow-hidden aspect-video relative group cursor-pointer"
-                    onClick={() => driver.license_photo_url && setSelectedImage(driver.license_photo_url)}
-                  >
-                    {driver.license_photo_url ? (
-                      <>
-                        <img src={driver.license_photo_url} alt="License" className="object-cover w-full h-full" />
-                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <ImageIcon className="w-6 h-6 text-white" />
-                        </div>
-                      </>
-                    ) : (
-                      <div className="w-full h-full bg-muted flex items-center justify-center text-xs text-muted-foreground text-center p-2">
-                        No License Image
-                      </div>
-                    )}
-                    <div className="absolute bottom-0 inset-x-0 bg-background/80 text-[10px] uppercase font-bold text-center py-1">License</div>
-                  </div>
-                  
-                  <div 
-                    className="border rounded-md overflow-hidden aspect-video relative group cursor-pointer"
-                    onClick={() => driver.truck_photo_url && setSelectedImage(driver.truck_photo_url)}
-                  >
-                    {driver.truck_photo_url ? (
-                      <>
-                        <img src={driver.truck_photo_url} alt="Truck" className="object-cover w-full h-full" />
-                        <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                          <ImageIcon className="w-6 h-6 text-white" />
-                        </div>
-                      </>
-                    ) : (
-                      <div className="w-full h-full bg-muted flex items-center justify-center text-xs text-muted-foreground text-center p-2">
-                        No Truck Image
-                      </div>
-                    )}
-                    <div className="absolute bottom-0 inset-x-0 bg-background/80 text-[10px] uppercase font-bold text-center py-1">Vehicle</div>
-                  </div>
-                </div>
 
-                {driver.ccp_receipt_url && (
-                  <div className="mt-4 p-3 bg-muted/30 border border-border rounded-lg">
-                    <div className="flex justify-between items-center mb-2">
-                      <span className="text-sm font-medium">CCP Receipt</span>
-                      <span className="text-xs text-muted-foreground capitalize">Status: {driver.ccp_status || 'Pending'}</span>
-                    </div>
-                    <div className="flex gap-4 items-center">
-                      <div 
-                        className="w-16 h-16 border rounded cursor-pointer shrink-0"
-                        onClick={() => setSelectedImage(driver.ccp_receipt_url)}
-                      >
-                        <img src={driver.ccp_receipt_url} alt="CCP Receipt" className="object-cover w-full h-full" />
-                      </div>
-                      {(!driver.ccp_status || driver.ccp_status === 'pending') ? (
-                        <div className="flex gap-2 flex-1">
-                          <Button size="sm" variant="outline" className="flex-1 text-green-500 hover:text-green-600 hover:bg-green-500/10" onClick={() => handleCCPAction(driver.user_id, 'approved')}>
-                            <Check className="w-4 h-4 mr-1" /> Approve CCP
-                          </Button>
-                          <Button size="sm" variant="outline" className="flex-1 text-red-500 hover:text-red-600 hover:bg-red-500/10" onClick={() => handleCCPAction(driver.user_id, 'rejected')}>
-                            <X className="w-4 h-4 mr-1" /> Reject CCP
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="flex-1 flex items-center justify-center border border-dashed rounded h-10 text-sm">
-                           Receipt {driver.ccp_status}
-                        </div>
-                      )}
-                    </div>
+              <CardContent className="p-4 flex-1">
+                {driver.details ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <PhotoBox url={driver.details.truck_front_photo_url} label="Truck" />
+                    <PhotoBox url={driver.details.driver_license_url} label="License" />
+                    {driver.details.truck_side_photo_url && (
+                      <PhotoBox url={driver.details.truck_side_photo_url} label="Truck Side" />
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-center h-24 text-sm text-muted-foreground border border-dashed rounded-md">
+                    No documents uploaded
                   </div>
                 )}
               </CardContent>
+
               <CardFooter className="grid grid-cols-2 gap-3 p-4 bg-muted/10 border-t border-border">
-                <Button 
-                  variant="outline" 
-                  className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/10 border-red-500/20"
-                  onClick={() => handleAction(driver.user_id, 'rejected')}
+                <Button
+                  variant="outline"
+                  className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/10 border-red-500/20 gap-1.5"
+                  onClick={() => handleReject(driver.id)}
+                  disabled={actionLoading === driver.id}
                 >
-                  <X className="w-4 h-4 mr-2" /> Reject Driver
+                  <X className="w-4 h-4" /> رفض
                 </Button>
-                <Button 
-                  className="w-full bg-green-600 hover:bg-green-700 text-white"
-                  onClick={() => handleAction(driver.user_id, 'approved')}
+                <Button
+                  className="w-full bg-green-600 hover:bg-green-700 text-white gap-1.5"
+                  onClick={() => handleApprove(driver.id)}
+                  disabled={actionLoading === driver.id}
                 >
-                  <Check className="w-4 h-4 mr-2" /> Approve Driver
+                  <Check className="w-4 h-4" /> قبول
                 </Button>
               </CardFooter>
             </Card>
@@ -235,7 +230,7 @@ export default function DriverQueuePage() {
       <Dialog open={!!selectedImage} onOpenChange={(open) => !open && setSelectedImage(null)}>
         <DialogContent className="max-w-4xl bg-transparent border-none shadow-none p-0">
           {selectedImage && (
-            <img src={selectedImage} alt="Preview" className="w-full h-auto max-h-[85vh] object-contain rounded-md" />
+            <img src={selectedImage} alt="Document Preview" className="w-full h-auto max-h-[85vh] object-contain rounded-md" />
           )}
         </DialogContent>
       </Dialog>
