@@ -7,16 +7,12 @@ import {
   CreditCard,
   Megaphone,
   AlertTriangle,
-  LogOut,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useAuth } from "@/contexts/AuthContext";
-import { Button } from "@/components/ui/button";
 import { usePendingDisputeCount } from "@/hooks/use-pending-disputes";
 
 export function Sidebar() {
   const [location] = useLocation();
-  const { user, signOut } = useAuth();
   const pendingDisputes = usePendingDisputeCount();
 
   const NAV_ITEMS = [
@@ -66,21 +62,7 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="p-4 border-t border-sidebar-border space-y-3">
-        {user && (
-          <div className="px-1">
-            <p className="text-xs text-sidebar-foreground/50 truncate">{user.email}</p>
-          </div>
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          className="w-full justify-start gap-2 text-sidebar-foreground/70 hover:text-destructive hover:bg-destructive/10"
-          onClick={signOut}
-        >
-          <LogOut className="w-4 h-4" />
-          Sign out
-        </Button>
+      <div className="p-4 border-t border-sidebar-border">
         <div className="text-xs text-sidebar-foreground/50 text-center">
           Al-Shaibia Admin v1.0
         </div>
