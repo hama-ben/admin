@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { supabase, type SubscriptionPayment, type PaymentStatus, insertTargetedAnnouncement } from "@/lib/supabase";
-import { ALGERIAN_WILAYAS, formatDZD, formatDate } from "@/lib/constants";
+import { api } from "@/lib/api";
+import { formatDZD, formatDate } from "@/lib/constants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,21 +15,29 @@ import {
   ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip,
 } from "recharts";
 
-const FB_LINK = "https://www.facebook.com/profile.php?id=61590856328769";
-
+type PaymentStatus = "pending" | "approved" | "rejected";
 type ChartType = "bar" | "pie";
 
-function findReceiptUrl(payment: SubscriptionPayment): string | null {
-  const urlKeys = Object.keys(payment).filter(
-    (k) => k !== "id" && k !== "driver_id" && k !== "status" && k !== "created_at" &&
-    typeof payment[k] === "string" &&
-    (payment[k].startsWith("http") || payment[k].includes("supabase"))
-  );
-  return urlKeys.length > 0 ? payment[urlKeys[0]] : null;
+interface Payment {
+  id: string;
+  driver_id: string;
+  receipt_image?: string | null;
+  status: PaymentStatus;
+  admin_notes?: string | null;
+  created_at: string;
+  reviewed_at?: string | null;
+  driver?: {
+    id: string;
+    name: string;
+    phone?: string;
+    wilaya?: string;
+    subscription_expires_at?: string;
+  } | null;
+  [key: string]: any;
 }
 
 export default function PaymentsPage() {
-  const [payments, setPayments] = useState<SubscriptionPayment[]>([]);
+  const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusTab, setStatusTab] = useState<PaymentStatus>("pending");
   const [totalRevenue, setTotalRevenue] = useState(0);
@@ -48,14 +56,8 @@ export default function PaymentsPage() {
   async function fetchPayments() {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("subscription_payments")
-        .select("*, driver:driver_id(id, name, phone, wilaya, subscription_expires_at)")
-        .eq("status", statusTab)
-        .order("created_at", { ascending: false });
-
-      if (error) throw error;
-      setPayments((data as SubscriptionPayment[]) || []);
+      const data = await api.get<Payment[]>(`/payments?status=${statusTab}`);
+      setPayments(data);
     } catch (err: any) {
       toast({ title: "Error fetching payments", description: err.message, variant: "destructive" });
     } finally {
@@ -65,62 +67,24 @@ export default function PaymentsPage() {
 
   async function fetchRevenueSummary() {
     try {
-      const { data: approved } = await supabase
-        .from("subscription_payments")
-        .select("*, driver:driver_id(wilaya)")
-        .eq("status", "approved");
-
-      const count = approved?.length || 0;
-      setApprovedCount(count);
-      const revEstimate = count * 1000;
-      setTotalRevenue(revEstimate);
-
-      const byWilaya: Record<string, number> = {};
-      approved?.forEach((p: any) => {
-        const w = p.driver?.wilaya || "Unknown";
-        byWilaya[w] = (byWilaya[w] || 0) + 1;
-      });
-
-      setWilayaRevenue(
-        Object.entries(byWilaya)
-          .map(([wilaya, count]) => ({ wilaya, count }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 15)
-      );
+      const data = await api.get<{ approvedCount: number; totalRevenue: number; wilayaRevenue: { wilaya: string; count: number }[] }>("/payments/summary");
+      setApprovedCount(data.approvedCount);
+      setTotalRevenue(data.totalRevenue);
+      setWilayaRevenue(data.wilayaRevenue);
     } catch (err) {
       console.error("Revenue summary error", err);
     }
   }
 
-  async function handleApprove(payment: SubscriptionPayment) {
+  async function handleApprove(payment: Payment) {
     setActionLoading(payment.id);
     try {
-      const { error: updatePayment } = await supabase
-        .from("subscription_payments")
-        .update({ status: "approved" })
-        .eq("id", payment.id);
-
-      if (updatePayment) throw updatePayment;
-
-      const currentExpiry = payment.driver?.subscription_expires_at
-        ? new Date(payment.driver.subscription_expires_at)
-        : new Date();
-      const base = Math.max(currentExpiry.getTime(), Date.now());
-      const newExpiry = new Date(base + 30 * 24 * 60 * 60 * 1000);
-
-      await supabase
-        .from("users")
-        .update({ subscription_expires_at: newExpiry.toISOString(), account_status: "active" })
-        .eq("id", payment.driver_id);
-
-      await insertTargetedAnnouncement(
-        "تم قبول دفع وصلك",
-        "تم إضافة 30 يوم إلى حسابك",
-        "Success",
-        payment.driver_id
-      );
-
-      toast({ title: "Payment Confirmed", description: "Subscription extended by 30 days and driver notified." });
+      await api.patch(`/payments/${payment.id}`, {
+        status: "approved",
+        driver_id: payment.driver_id,
+        subscription_expires_at: payment.driver?.subscription_expires_at,
+      });
+      toast({ title: "Payment Confirmed", description: "Subscription extended by 30 days." });
       setPayments((prev) => prev.filter((p) => p.id !== payment.id));
       fetchRevenueSummary();
     } catch (err: any) {
@@ -130,23 +94,10 @@ export default function PaymentsPage() {
     }
   }
 
-  async function handleReject(payment: SubscriptionPayment) {
+  async function handleReject(payment: Payment) {
     setActionLoading(payment.id);
     try {
-      const { error: updatePayment } = await supabase
-        .from("subscription_payments")
-        .update({ status: "rejected" })
-        .eq("id", payment.id);
-
-      if (updatePayment) throw updatePayment;
-
-      await insertTargetedAnnouncement(
-        "تم رفض دفعك",
-        `عذراً، لم يتم قبول وصل الدفع. يرجى التواصل معنا: ${FB_LINK}`,
-        "Warning",
-        payment.driver_id
-      );
-
+      await api.patch(`/payments/${payment.id}`, { status: "rejected" });
       toast({ title: "Payment Rejected", description: "Driver has been notified." });
       setPayments((prev) => prev.filter((p) => p.id !== payment.id));
     } catch (err: any) {
@@ -158,13 +109,17 @@ export default function PaymentsPage() {
 
   const CHART_COLORS = ["hsl(185,70%,45%)", "hsl(210,80%,60%)", "hsl(150,60%,45%)", "hsl(30,80%,55%)", "hsl(270,60%,60%)"];
 
+  const getTabBadge = (status: PaymentStatus) => {
+    switch (status) {
+      case "pending": return "bg-amber-500/20 text-amber-500 border-amber-500/20";
+      case "approved": return "bg-green-500/20 text-green-500 border-green-500/20";
+      case "rejected": return "bg-red-500/20 text-red-500 border-red-500/20";
+    }
+  };
+
   const renderChart = () => {
     if (wilayaRevenue.length === 0) {
-      return (
-        <div className="flex h-full items-center justify-center text-muted-foreground">
-          No approved payment data yet.
-        </div>
-      );
+      return <div className="flex h-full items-center justify-center text-muted-foreground">No approved payment data yet.</div>;
     }
     if (chartType === "pie") {
       return (
@@ -194,14 +149,6 @@ export default function PaymentsPage() {
     );
   };
 
-  const getTabBadge = (status: PaymentStatus) => {
-    switch (status) {
-      case "pending": return "bg-amber-500/20 text-amber-500 border-amber-500/20";
-      case "approved": return "bg-green-500/20 text-green-500 border-green-500/20";
-      case "rejected": return "bg-red-500/20 text-red-500 border-red-500/20";
-    }
-  };
-
   return (
     <div className="p-8 space-y-6 animate-in fade-in duration-500">
       <div>
@@ -228,9 +175,7 @@ export default function PaymentsPage() {
             <div className="flex items-center justify-between">
               <CardTitle className="text-base">Payments by Wilaya</CardTitle>
               <Select value={chartType} onValueChange={(v) => setChartType(v as ChartType)}>
-                <SelectTrigger className="w-[100px] h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
+                <SelectTrigger className="w-[100px] h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="bar">Bar</SelectItem>
                   <SelectItem value="pie">Pie</SelectItem>
@@ -242,9 +187,7 @@ export default function PaymentsPage() {
       </div>
 
       <Card>
-        <CardContent className="h-[280px] pt-6">
-          {renderChart()}
-        </CardContent>
+        <CardContent className="h-[280px] pt-6">{renderChart()}</CardContent>
       </Card>
 
       <Tabs value={statusTab} onValueChange={(v) => setStatusTab(v as PaymentStatus)}>
@@ -258,13 +201,9 @@ export default function PaymentsPage() {
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {Array(6).fill(0).map((_, i) => (
-            <Card key={i}>
-              <CardContent className="p-5 space-y-3">
-                <Skeleton className="h-5 w-32" />
-                <Skeleton className="h-36 w-full" />
-                <Skeleton className="h-9 w-full" />
-              </CardContent>
-            </Card>
+            <Card key={i}><CardContent className="p-5 space-y-3">
+              <Skeleton className="h-5 w-32" /><Skeleton className="h-36 w-full" /><Skeleton className="h-9 w-full" />
+            </CardContent></Card>
           ))}
         </div>
       ) : payments.length === 0 ? (
@@ -276,7 +215,7 @@ export default function PaymentsPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {payments.map((payment) => {
-            const receiptUrl = findReceiptUrl(payment);
+            const receiptUrl = payment.receipt_image || null;
             return (
               <Card key={payment.id} className="flex flex-col border-border bg-card">
                 <CardContent className="p-5 flex flex-col gap-4 flex-1">
@@ -284,13 +223,9 @@ export default function PaymentsPage() {
                     <div>
                       <p className="font-semibold text-base">{payment.driver?.name || "Unknown Driver"}</p>
                       <p className="text-sm text-muted-foreground font-mono">{payment.driver?.phone}</p>
-                      {payment.driver?.wilaya && (
-                        <p className="text-xs text-muted-foreground">{payment.driver.wilaya}</p>
-                      )}
+                      {payment.driver?.wilaya && <p className="text-xs text-muted-foreground">{payment.driver.wilaya}</p>}
                     </div>
-                    <Badge variant="outline" className={getTabBadge(payment.status)}>
-                      {payment.status}
-                    </Badge>
+                    <Badge variant="outline" className={getTabBadge(payment.status)}>{payment.status}</Badge>
                   </div>
 
                   {receiptUrl ? (
@@ -340,9 +275,7 @@ export default function PaymentsPage() {
 
       <Dialog open={!!selectedImage} onOpenChange={(open) => !open && setSelectedImage(null)}>
         <DialogContent className="max-w-4xl bg-transparent border-none shadow-none p-0">
-          {selectedImage && (
-            <img src={selectedImage} alt="Receipt Preview" className="w-full h-auto max-h-[85vh] object-contain rounded-md" />
-          )}
+          {selectedImage && <img src={selectedImage} alt="Receipt Preview" className="w-full h-auto max-h-[85vh] object-contain rounded-md" />}
         </DialogContent>
       </Dialog>
     </div>

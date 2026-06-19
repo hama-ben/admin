@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { supabase } from "@/lib/supabase";
+import { api } from "@/lib/api";
 import { formatDate } from "@/lib/constants";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -70,26 +70,15 @@ export default function DisputesPage() {
 
   useEffect(() => {
     fetchDisputes();
-
-    const channel = supabase
-      .channel("disputes-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "ratings_disputes" }, () => {
-        fetchDisputes();
-      })
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
+    const interval = setInterval(fetchDisputes, 30_000);
+    return () => clearInterval(interval);
   }, []);
 
   async function fetchDisputes() {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("ratings_disputes")
-        .select("*, user:users!ratings_disputes_driver_id_fkey(id, name, user_type, phone, wilaya)")
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      setDisputes((data as Dispute[]) || []);
+      const data = await api.get<Dispute[]>("/disputes");
+      setDisputes(data);
     } catch (err: any) {
       toast({ title: "خطأ في جلب البيانات", description: err.message, variant: "destructive" });
     } finally {
@@ -99,11 +88,7 @@ export default function DisputesPage() {
 
   const handleStatusChange = async (id: string, status: DisputeStatus) => {
     try {
-      const { error } = await supabase
-        .from("ratings_disputes")
-        .update({ status })
-        .eq("id", id);
-      if (error) throw error;
+      await api.patch(`/disputes/${id}`, { status });
       setDisputes((prev) => prev.map((d) => d.id === id ? { ...d, status } : d));
       if (selected?.id === id) setSelected((s) => s ? { ...s, status } : null);
       toast({ title: "تم تحديث الحالة", description: `تم تغيير الحالة إلى "${STATUS_LABELS[status]}"` });
@@ -139,22 +124,13 @@ export default function DisputesPage() {
         )}
       </div>
 
-      {/* Filters */}
       <div className="flex flex-wrap items-center gap-3 bg-card p-4 rounded-lg border border-border">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            placeholder="بحث بالاسم أو المحتوى..."
-            className="pl-9"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <Input placeholder="بحث بالاسم أو المحتوى..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
-
         <Select value={statusFilter} onValueChange={setStatusFilter}>
-          <SelectTrigger className="w-[180px]">
-            <SelectValue placeholder="الحالة" />
-          </SelectTrigger>
+          <SelectTrigger className="w-[180px]"><SelectValue placeholder="الحالة" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">جميع الحالات</SelectItem>
             <SelectItem value="pending">معلق</SelectItem>
@@ -162,22 +138,17 @@ export default function DisputesPage() {
             <SelectItem value="dismissed">مغلق</SelectItem>
           </SelectContent>
         </Select>
-
         <Select value={userTypeFilter} onValueChange={setUserTypeFilter}>
-          <SelectTrigger className="w-[160px]">
-            <SelectValue placeholder="نوع المستخدم" />
-          </SelectTrigger>
+          <SelectTrigger className="w-[160px]"><SelectValue placeholder="نوع المستخدم" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">الكل</SelectItem>
             <SelectItem value="driver">سائق</SelectItem>
             <SelectItem value="consumer">مستهلك</SelectItem>
           </SelectContent>
         </Select>
-
         <span className="text-sm text-muted-foreground ml-auto">{filtered.length} نتيجة</span>
       </div>
 
-      {/* Table */}
       <div className="border rounded-md overflow-hidden bg-card">
         <Table>
           <TableHeader>
@@ -194,11 +165,7 @@ export default function DisputesPage() {
           <TableBody>
             {loading ? (
               Array(6).fill(0).map((_, i) => (
-                <TableRow key={i}>
-                  {Array(7).fill(0).map((__, j) => (
-                    <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>
-                  ))}
-                </TableRow>
+                <TableRow key={i}>{Array(7).fill(0).map((__, j) => <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>)}</TableRow>
               ))
             ) : filtered.length === 0 ? (
               <TableRow>
@@ -213,34 +180,19 @@ export default function DisputesPage() {
                 <TableRow key={dispute.id}>
                   <TableCell className="font-medium">
                     <p>{dispute.user?.name ?? "مستخدم مجهول"}</p>
-                    {dispute.user?.phone && (
-                      <p className="text-xs text-muted-foreground">{dispute.user.phone}</p>
-                    )}
+                    {dispute.user?.phone && <p className="text-xs text-muted-foreground">{dispute.user.phone}</p>}
                   </TableCell>
                   <TableCell>
-                    <span className="text-sm">
-                      {USER_TYPE_LABELS[dispute.user?.user_type ?? ""] ?? dispute.user?.user_type ?? "—"}
-                    </span>
+                    <span className="text-sm">{USER_TYPE_LABELS[dispute.user?.user_type ?? ""] ?? dispute.user?.user_type ?? "—"}</span>
                   </TableCell>
-                  <TableCell>
-                    <StarRating rating={dispute.rating} />
-                  </TableCell>
+                  <TableCell><StarRating rating={dispute.rating} /></TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    {dispute.comment ? (
-                      <span className="line-clamp-2">{dispute.comment}</span>
-                    ) : (
-                      <span className="italic opacity-50">لا توجد رسالة</span>
-                    )}
+                    {dispute.comment ? <span className="line-clamp-2">{dispute.comment}</span> : <span className="italic opacity-50">لا توجد رسالة</span>}
                   </TableCell>
                   <TableCell>
-                    <Select
-                      value={dispute.status}
-                      onValueChange={(v) => handleStatusChange(dispute.id, v as DisputeStatus)}
-                    >
+                    <Select value={dispute.status} onValueChange={(v) => handleStatusChange(dispute.id, v as DisputeStatus)}>
                       <SelectTrigger className="h-8 w-[150px] text-xs">
-                        <Badge variant="outline" className={STATUS_STYLES[dispute.status]}>
-                          {STATUS_LABELS[dispute.status]}
-                        </Badge>
+                        <Badge variant="outline" className={STATUS_STYLES[dispute.status]}>{STATUS_LABELS[dispute.status]}</Badge>
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="pending">معلق</SelectItem>
@@ -249,18 +201,10 @@ export default function DisputesPage() {
                       </SelectContent>
                     </Select>
                   </TableCell>
-                  <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
-                    {formatDate(dispute.created_at)}
-                  </TableCell>
+                  <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(dispute.created_at)}</TableCell>
                   <TableCell className="text-right">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="gap-1.5"
-                      onClick={() => setSelected(dispute)}
-                    >
-                      <Eye className="w-4 h-4" />
-                      عرض
+                    <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => setSelected(dispute)}>
+                      <Eye className="w-4 h-4" /> عرض
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -270,59 +214,29 @@ export default function DisputesPage() {
         </Table>
       </div>
 
-      {/* Detail Modal */}
       <Dialog open={!!selected} onOpenChange={(open) => !open && setSelected(null)}>
         <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>تفاصيل الشكوى</DialogTitle>
-          </DialogHeader>
+          <DialogHeader><DialogTitle>تفاصيل الشكوى</DialogTitle></DialogHeader>
           {selected && (
             <div className="space-y-4 pt-2">
               <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <p className="text-muted-foreground text-xs mb-1">المستخدم</p>
-                  <p className="font-medium">{selected.user?.name ?? "مجهول"}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground text-xs mb-1">النوع</p>
-                  <p>{USER_TYPE_LABELS[selected.user?.user_type ?? ""] ?? "—"}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground text-xs mb-1">الولاية</p>
-                  <p>{selected.wilaya ?? selected.user?.wilaya ?? "—"}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground text-xs mb-1">التاريخ</p>
-                  <p>{formatDate(selected.created_at)}</p>
-                </div>
-                <div>
-                  <p className="text-muted-foreground text-xs mb-1">التقييم</p>
-                  <StarRating rating={selected.rating} />
-                </div>
-                <div>
-                  <p className="text-muted-foreground text-xs mb-1">الحالة</p>
-                  <Badge variant="outline" className={STATUS_STYLES[selected.status]}>
-                    {STATUS_LABELS[selected.status]}
-                  </Badge>
-                </div>
+                <div><p className="text-muted-foreground text-xs mb-1">المستخدم</p><p className="font-medium">{selected.user?.name ?? "مجهول"}</p></div>
+                <div><p className="text-muted-foreground text-xs mb-1">النوع</p><p>{USER_TYPE_LABELS[selected.user?.user_type ?? ""] ?? "—"}</p></div>
+                <div><p className="text-muted-foreground text-xs mb-1">الولاية</p><p>{selected.wilaya ?? selected.user?.wilaya ?? "—"}</p></div>
+                <div><p className="text-muted-foreground text-xs mb-1">التاريخ</p><p>{formatDate(selected.created_at)}</p></div>
+                <div><p className="text-muted-foreground text-xs mb-1">التقييم</p><StarRating rating={selected.rating} /></div>
+                <div><p className="text-muted-foreground text-xs mb-1">الحالة</p><Badge variant="outline" className={STATUS_STYLES[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></div>
               </div>
-
               <div>
                 <p className="text-muted-foreground text-xs mb-1">الرسالة / التعليق</p>
                 <div className="bg-muted/40 rounded-md p-3 text-sm leading-relaxed min-h-[80px]">
                   {selected.comment ?? <span className="italic opacity-50">لا توجد رسالة</span>}
                 </div>
               </div>
-
               <div className="flex items-center gap-2 pt-2 border-t">
                 <span className="text-sm text-muted-foreground">تغيير الحالة:</span>
-                <Select
-                  value={selected.status}
-                  onValueChange={(v) => handleStatusChange(selected.id, v as DisputeStatus)}
-                >
-                  <SelectTrigger className="w-[180px] h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
+                <Select value={selected.status} onValueChange={(v) => handleStatusChange(selected.id, v as DisputeStatus)}>
+                  <SelectTrigger className="w-[180px] h-8 text-xs"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="pending">معلق</SelectItem>
                     <SelectItem value="resolved">تمت المعالجة</SelectItem>

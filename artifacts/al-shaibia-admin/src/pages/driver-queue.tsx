@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase, type PendingDriver, type DriverDetails, insertTargetedAnnouncement } from "@/lib/supabase";
+import { api } from "@/lib/api";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -7,8 +7,36 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Check, X, Image as ImageIcon } from "lucide-react";
 
+interface DriverDetails {
+  driver_id: string;
+  wilaya?: string;
+  commune?: string;
+  truck_front_photo_url?: string | null;
+  driver_license_url?: string | null;
+  truck_side_photo_url?: string | null;
+  truck_video_url?: string | null;
+}
+
+interface PendingDriver {
+  user_id: string;
+  status: string;
+  truck_photo_url?: string | null;
+  license_photo_url?: string | null;
+  ccp_receipt_url?: string | null;
+  ccp_status?: string | null;
+  created_at: string;
+  user?: {
+    id: string;
+    name: string;
+    phone?: string;
+    wilaya?: string;
+    commune?: string;
+  } | null;
+  details?: DriverDetails | null;
+}
+
 export default function DriverQueuePage() {
-  const [drivers, setDrivers] = useState<(PendingDriver & { details?: DriverDetails })[]>([]);
+  const [drivers, setDrivers] = useState<PendingDriver[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -16,73 +44,28 @@ export default function DriverQueuePage() {
 
   useEffect(() => {
     fetchPendingDrivers();
-
-    const channel = supabase
-      .channel("driver-queue-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () => {
-        fetchPendingDrivers();
-      })
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
+    const interval = setInterval(fetchPendingDrivers, 30_000);
+    return () => clearInterval(interval);
   }, []);
 
   async function fetchPendingDrivers() {
     setLoading(true);
     try {
-      const { data: pendingUsers, error: usersError } = await supabase
-        .from("users")
-        .select("id, name, phone, wilaya, commune, account_status, user_type, subscription_expires_at")
-        .eq("user_type", "سائق")
-        .eq("account_status", "pending");
-
-      if (usersError) throw usersError;
-      if (!pendingUsers || pendingUsers.length === 0) {
-        setDrivers([]);
-        return;
-      }
-
-      const userIds = pendingUsers.map((u) => u.id);
-      const { data: detailsData } = await supabase
-        .from("driver_details")
-        .select("*")
-        .in("driver_id", userIds);
-
-      const detailsMap = new Map<string, DriverDetails>();
-      (detailsData || []).forEach((d) => detailsMap.set(d.driver_id, d));
-
-      setDrivers(pendingUsers.map((u) => ({ ...u, details: detailsMap.get(u.id) })));
+      const data = await api.get<PendingDriver[]>("/drivers/pending");
+      setDrivers(data);
     } catch (err: any) {
-      console.error("Failed to fetch driver queue", err);
       toast({ title: "Error fetching queue", description: err.message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleApprove(driverId: string) {
-    setActionLoading(driverId);
+  async function handleApprove(userId: string) {
+    setActionLoading(userId);
     try {
-      const { error: updateError } = await supabase
-        .from("users")
-        .update({ account_status: "active" })
-        .eq("id", driverId);
-
-      if (updateError) throw updateError;
-
-      const annError = await insertTargetedAnnouncement(
-        "تم قبولك بيننا",
-        "مرحبا بك",
-        "Success",
-        driverId
-      );
-
-      if (annError) {
-        console.warn("Announcement insert warning:", annError.message);
-      }
-
-      toast({ title: "Driver Approved", description: "The driver has been approved and notified." });
-      setDrivers((prev) => prev.filter((d) => d.id !== driverId));
+      await api.patch(`/drivers/${userId}/status`, { status: "approved" });
+      toast({ title: "Driver Approved", description: "The driver has been approved." });
+      setDrivers((prev) => prev.filter((d) => d.user_id !== userId));
     } catch (err: any) {
       toast({ title: "Action failed", description: err.message, variant: "destructive" });
     } finally {
@@ -90,29 +73,12 @@ export default function DriverQueuePage() {
     }
   }
 
-  async function handleReject(driverId: string) {
-    setActionLoading(driverId);
+  async function handleReject(userId: string) {
+    setActionLoading(userId);
     try {
-      const { error: updateError } = await supabase
-        .from("users")
-        .update({ account_status: "rejected" })
-        .eq("id", driverId);
-
-      if (updateError) throw updateError;
-
-      const annError = await insertTargetedAnnouncement(
-        "تم رفض طلبك",
-        "عذراً، لم يتم قبول طلبك. يرجى التواصل معنا عبر الفيسبوك: https://www.facebook.com/profile.php?id=61590856328769",
-        "Warning",
-        driverId
-      );
-
-      if (annError) {
-        console.warn("Announcement insert warning:", annError.message);
-      }
-
+      await api.patch(`/drivers/${userId}/status`, { status: "rejected" });
       toast({ title: "Driver Rejected", description: "The driver has been rejected." });
-      setDrivers((prev) => prev.filter((d) => d.id !== driverId));
+      setDrivers((prev) => prev.filter((d) => d.user_id !== userId));
     } catch (err: any) {
       toast({ title: "Action failed", description: err.message, variant: "destructive" });
     } finally {
@@ -175,55 +141,60 @@ export default function DriverQueuePage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-          {drivers.map((driver) => (
-            <Card key={driver.id} className="flex flex-col border-border bg-card">
-              <CardHeader className="pb-3 border-b border-border/50">
-                <CardTitle className="flex justify-between items-center text-lg">
-                  <span>{driver.name}</span>
-                  {driver.wilaya && (
-                    <span className="text-xs font-normal text-muted-foreground px-2 py-1 bg-muted rounded-full">
-                      {driver.wilaya}
-                    </span>
-                  )}
-                </CardTitle>
-                <div className="text-sm text-muted-foreground font-mono">{driver.phone}</div>
-              </CardHeader>
+          {drivers.map((driver) => {
+            const name = driver.user?.name ?? driver.user_id;
+            const phone = driver.user?.phone;
+            const wilaya = driver.user?.wilaya;
+            return (
+              <Card key={driver.user_id} className="flex flex-col border-border bg-card">
+                <CardHeader className="pb-3 border-b border-border/50">
+                  <CardTitle className="flex justify-between items-center text-lg">
+                    <span>{name}</span>
+                    {wilaya && (
+                      <span className="text-xs font-normal text-muted-foreground px-2 py-1 bg-muted rounded-full">
+                        {wilaya}
+                      </span>
+                    )}
+                  </CardTitle>
+                  {phone && <div className="text-sm text-muted-foreground font-mono">{phone}</div>}
+                </CardHeader>
 
-              <CardContent className="p-4 flex-1">
-                {driver.details ? (
+                <CardContent className="p-4 flex-1">
                   <div className="grid grid-cols-2 gap-3">
-                    <PhotoBox url={driver.details.truck_front_photo_url} label="Truck" />
-                    <PhotoBox url={driver.details.driver_license_url} label="License" />
-                    {driver.details.truck_side_photo_url && (
-                      <PhotoBox url={driver.details.truck_side_photo_url} label="Truck Side" />
+                    <PhotoBox url={driver.truck_photo_url} label="Truck" />
+                    <PhotoBox url={driver.license_photo_url} label="License" />
+                    {driver.ccp_receipt_url && (
+                      <PhotoBox url={driver.ccp_receipt_url} label="CCP Receipt" />
+                    )}
+                    {driver.details?.truck_front_photo_url && (
+                      <PhotoBox url={driver.details.truck_front_photo_url} label="Truck Front" />
+                    )}
+                    {driver.details?.driver_license_url && (
+                      <PhotoBox url={driver.details.driver_license_url} label="Driver License" />
                     )}
                   </div>
-                ) : (
-                  <div className="flex items-center justify-center h-24 text-sm text-muted-foreground border border-dashed rounded-md">
-                    No documents uploaded
-                  </div>
-                )}
-              </CardContent>
+                </CardContent>
 
-              <CardFooter className="grid grid-cols-2 gap-3 p-4 bg-muted/10 border-t border-border">
-                <Button
-                  variant="outline"
-                  className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/10 border-red-500/20 gap-1.5"
-                  onClick={() => handleReject(driver.id)}
-                  disabled={actionLoading === driver.id}
-                >
-                  <X className="w-4 h-4" /> رفض
-                </Button>
-                <Button
-                  className="w-full bg-green-600 hover:bg-green-700 text-white gap-1.5"
-                  onClick={() => handleApprove(driver.id)}
-                  disabled={actionLoading === driver.id}
-                >
-                  <Check className="w-4 h-4" /> قبول
-                </Button>
-              </CardFooter>
-            </Card>
-          ))}
+                <CardFooter className="grid grid-cols-2 gap-3 p-4 bg-muted/10 border-t border-border">
+                  <Button
+                    variant="outline"
+                    className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/10 border-red-500/20 gap-1.5"
+                    onClick={() => handleReject(driver.user_id)}
+                    disabled={actionLoading === driver.user_id}
+                  >
+                    <X className="w-4 h-4" /> رفض
+                  </Button>
+                  <Button
+                    className="w-full bg-green-600 hover:bg-green-700 text-white gap-1.5"
+                    onClick={() => handleApprove(driver.user_id)}
+                    disabled={actionLoading === driver.user_id}
+                  >
+                    <Check className="w-4 h-4" /> قبول
+                  </Button>
+                </CardFooter>
+              </Card>
+            );
+          })}
         </div>
       )}
 

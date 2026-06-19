@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase, type User } from "@/lib/supabase";
+import { api } from "@/lib/api";
 import { ALGERIAN_WILAYAS } from "@/lib/constants";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,8 +11,15 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const USER_TYPE_DRIVER = "سائق";
-const USER_TYPE_CONSUMER = "مستهلك";
+interface User {
+  id: string;
+  name: string;
+  phone?: string;
+  user_type: string;
+  wilaya?: string;
+  account_status?: string;
+  subscription_expires_at?: string;
+}
 
 function formatExpiry(dateString?: string) {
   if (!dateString) return "—";
@@ -31,7 +38,6 @@ export default function UsersPage() {
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const { toast } = useToast();
-
   const PAGE_SIZE = 20;
 
   useEffect(() => {
@@ -39,66 +45,40 @@ export default function UsersPage() {
     return () => clearTimeout(timer);
   }, [search]);
 
-  useEffect(() => {
-    setPage(0);
-  }, [roleTab, debouncedSearch, wilayaFilter]);
+  useEffect(() => { setPage(0); }, [roleTab, debouncedSearch, wilayaFilter]);
 
   useEffect(() => {
     async function fetchUsers() {
       setLoading(true);
       try {
-        let query = supabase.from("users").select("*", { count: "exact" });
+        const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
+        if (roleTab !== "all") params.set("role", roleTab);
+        if (wilayaFilter !== "all") params.set("wilaya", wilayaFilter);
+        if (debouncedSearch) params.set("search", debouncedSearch);
 
-        if (roleTab === "driver") {
-          query = query.eq("user_type", USER_TYPE_DRIVER);
-        } else if (roleTab === "consumer") {
-          query = query.eq("user_type", USER_TYPE_CONSUMER);
-        }
-
-        if (wilayaFilter !== "all") {
-          query = query.eq("wilaya", wilayaFilter);
-        }
-        if (debouncedSearch) {
-          query = query.or(`name.ilike.%${debouncedSearch}%,phone.ilike.%${debouncedSearch}%`);
-        }
-
-        query = query
-          .order("subscription_expires_at", { ascending: false, nullsFirst: false })
-          .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
-
-        const { data, count, error } = await query;
-        if (error) throw error;
-
-        setUsers(data || []);
-        if (count !== null) setTotalCount(count);
+        const result = await api.get<{ data: User[]; count: number }>(`/users?${params}`);
+        setUsers(result.data);
+        setTotalCount(result.count);
       } catch (err: any) {
-        console.error("Failed to fetch users", err);
         toast({ title: "Error fetching users", description: err.message, variant: "destructive" });
       } finally {
         setLoading(false);
       }
     }
-
     fetchUsers();
   }, [roleTab, debouncedSearch, wilayaFilter, page, toast]);
 
   function getRoleBadge(userType: string) {
-    if (userType === USER_TYPE_DRIVER) {
-      return <Badge variant="default" className="bg-primary/20 text-primary border-primary/30">سائق</Badge>;
-    }
+    if (userType === "سائق") return <Badge variant="default" className="bg-primary/20 text-primary border-primary/30">سائق</Badge>;
     return <Badge variant="secondary">مستهلك</Badge>;
   }
 
   function getStatusBadge(status?: string) {
     switch (status) {
-      case "active":
-        return <Badge variant="outline" className="bg-green-500/20 text-green-500 border-green-500/30">Active</Badge>;
-      case "pending":
-        return <Badge variant="outline" className="bg-amber-500/20 text-amber-500 border-amber-500/30">Pending</Badge>;
-      case "rejected":
-        return <Badge variant="outline" className="bg-red-500/20 text-red-500 border-red-500/30">Rejected</Badge>;
-      default:
-        return <Badge variant="outline">{status || "—"}</Badge>;
+      case "active": return <Badge variant="outline" className="bg-green-500/20 text-green-500 border-green-500/30">Active</Badge>;
+      case "pending": return <Badge variant="outline" className="bg-amber-500/20 text-amber-500 border-amber-500/30">Pending</Badge>;
+      case "rejected": return <Badge variant="outline" className="bg-red-500/20 text-red-500 border-red-500/30">Rejected</Badge>;
+      default: return <Badge variant="outline">{status || "—"}</Badge>;
     }
   }
 
@@ -121,23 +101,13 @@ export default function UsersPage() {
         <div className="flex gap-3">
           <div className="relative w-64">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search name or phone..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-9"
-            />
+            <Input placeholder="Search name or phone..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
           </div>
-
           <Select value={wilayaFilter} onValueChange={setWilayaFilter}>
-            <SelectTrigger className="w-[200px]">
-              <SelectValue placeholder="All Wilayas" />
-            </SelectTrigger>
+            <SelectTrigger className="w-[200px]"><SelectValue placeholder="All Wilayas" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Wilayas</SelectItem>
-              {ALGERIAN_WILAYAS.map((w) => (
-                <SelectItem key={w} value={w}>{w}</SelectItem>
-              ))}
+              {ALGERIAN_WILAYAS.map((w) => <SelectItem key={w} value={w}>{w}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -158,17 +128,11 @@ export default function UsersPage() {
           <TableBody>
             {loading ? (
               Array(10).fill(0).map((_, i) => (
-                <TableRow key={i}>
-                  {Array(6).fill(0).map((__, j) => (
-                    <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>
-                  ))}
-                </TableRow>
+                <TableRow key={i}>{Array(6).fill(0).map((__, j) => <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>)}</TableRow>
               ))
             ) : users.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">
-                  No users found.
-                </TableCell>
+                <TableCell colSpan={6} className="text-center py-10 text-muted-foreground">No users found.</TableCell>
               </TableRow>
             ) : (
               users.map((user) => (

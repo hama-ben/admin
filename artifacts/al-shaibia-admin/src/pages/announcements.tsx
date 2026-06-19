@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase, type Announcement } from "@/lib/supabase";
+import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,16 @@ import { z } from "zod";
 import { useToast } from "@/hooks/use-toast";
 import { Megaphone, Send, Users, Truck, Globe } from "lucide-react";
 import { formatDate } from "@/lib/constants";
+
+interface Announcement {
+  id: string;
+  title: string;
+  badge_text?: string;
+  target_audience: string;
+  content: string;
+  is_active: boolean;
+  created_at: string;
+}
 
 const BADGE_STYLES: Record<string, string> = {
   Info: "bg-blue-500/20 text-blue-400 border-blue-500/20",
@@ -46,36 +56,18 @@ export default function AnnouncementsPage() {
 
   const form = useForm<FormValues>({
     resolver: zodResolver(formSchema),
-    defaultValues: {
-      title: "",
-      badge_text: "Info",
-      target_audience: "Everyone",
-      content: "",
-    },
+    defaultValues: { title: "", badge_text: "Info", target_audience: "Everyone", content: "" },
   });
 
   useEffect(() => {
     fetchAnnouncements();
-
-    const channel = supabase
-      .channel("announcements-realtime")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "announcements" }, (payload) => {
-        setAnnouncements((prev) => [payload.new as Announcement, ...prev]);
-      })
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
   }, []);
 
   async function fetchAnnouncements() {
     setLoading(true);
     try {
-      const { data, error } = await supabase
-        .from("announcements")
-        .select("*")
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      setAnnouncements(data || []);
+      const data = await api.get<Announcement[]>("/announcements");
+      setAnnouncements(data);
     } catch (err: any) {
       toast({ title: "Error fetching announcements", description: err.message, variant: "destructive" });
     } finally {
@@ -86,13 +78,8 @@ export default function AnnouncementsPage() {
   const onSubmit = async (values: FormValues) => {
     setSubmitting(true);
     try {
-      const { error } = await supabase.from("announcements").insert({
-        title: values.title,
-        badge_text: values.badge_text,
-        target_audience: values.target_audience,
-        content: values.content,
-      });
-      if (error) throw error;
+      const newAnn = await api.post<Announcement>("/announcements", values);
+      setAnnouncements((prev) => [newAnn, ...prev]);
       toast({ title: "Announcement published", description: "Your announcement is now live." });
       form.reset();
     } catch (err: any) {
@@ -118,86 +105,56 @@ export default function AnnouncementsPage() {
         <CardContent>
           <Form {...form}>
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-5">
-              <FormField
-                control={form.control}
-                name="title"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Title</FormLabel>
-                    <FormControl>
-                      <Input placeholder="Announcement title..." {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
+              <FormField control={form.control} name="title" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Title</FormLabel>
+                  <FormControl><Input placeholder="Announcement title..." {...field} /></FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                <FormField
-                  control={form.control}
-                  name="badge_text"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Badge Type</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select badge type" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="Info">Info</SelectItem>
-                          <SelectItem value="Warning">Warning</SelectItem>
-                          <SelectItem value="Success">Success</SelectItem>
-                          <SelectItem value="Promo">Promo</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="target_audience"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Target Audience</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select audience" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="Everyone">Everyone</SelectItem>
-                          <SelectItem value="Drivers">Drivers</SelectItem>
-                          <SelectItem value="Consumers">Consumers</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-
-              <FormField
-                control={form.control}
-                name="content"
-                render={({ field }) => (
+                <FormField control={form.control} name="badge_text" render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Message</FormLabel>
-                    <FormControl>
-                      <Textarea
-                        placeholder="Write your announcement message here..."
-                        className="min-h-[120px] resize-none"
-                        {...field}
-                      />
-                    </FormControl>
+                    <FormLabel>Badge Type</FormLabel>
+                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormControl><SelectTrigger><SelectValue placeholder="Select badge type" /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        <SelectItem value="Info">Info</SelectItem>
+                        <SelectItem value="Warning">Warning</SelectItem>
+                        <SelectItem value="Success">Success</SelectItem>
+                        <SelectItem value="Promo">Promo</SelectItem>
+                      </SelectContent>
+                    </Select>
                     <FormMessage />
                   </FormItem>
-                )}
-              />
+                )} />
+
+                <FormField control={form.control} name="target_audience" render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Target Audience</FormLabel>
+                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormControl><SelectTrigger><SelectValue placeholder="Select audience" /></SelectTrigger></FormControl>
+                      <SelectContent>
+                        <SelectItem value="Everyone">Everyone</SelectItem>
+                        <SelectItem value="Drivers">Drivers</SelectItem>
+                        <SelectItem value="Consumers">Consumers</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )} />
+              </div>
+
+              <FormField control={form.control} name="content" render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Message</FormLabel>
+                  <FormControl>
+                    <Textarea placeholder="Write your announcement message here..." className="min-h-[120px] resize-none" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )} />
 
               <Button type="submit" disabled={submitting} className="gap-2">
                 <Send className="w-4 h-4" />
@@ -213,16 +170,10 @@ export default function AnnouncementsPage() {
         {loading ? (
           <div className="space-y-4">
             {Array(3).fill(0).map((_, i) => (
-              <Card key={i}>
-                <CardContent className="p-5 space-y-3">
-                  <div className="flex gap-3">
-                    <Skeleton className="h-6 w-16" />
-                    <Skeleton className="h-6 w-24" />
-                  </div>
-                  <Skeleton className="h-5 w-48" />
-                  <Skeleton className="h-4 w-full" />
-                </CardContent>
-              </Card>
+              <Card key={i}><CardContent className="p-5 space-y-3">
+                <div className="flex gap-3"><Skeleton className="h-6 w-16" /><Skeleton className="h-6 w-24" /></div>
+                <Skeleton className="h-5 w-48" /><Skeleton className="h-4 w-full" />
+              </CardContent></Card>
             ))}
           </div>
         ) : announcements.length === 0 ? (
@@ -240,14 +191,9 @@ export default function AnnouncementsPage() {
                 <Card key={ann.id} className="border-border bg-card">
                   <CardContent className="p-5">
                     <div className="flex flex-wrap items-center gap-2 mb-3">
-                      {ann.badge_text && (
-                        <Badge variant="outline" className={badgeStyle}>
-                          {ann.badge_text}
-                        </Badge>
-                      )}
+                      {ann.badge_text && <Badge variant="outline" className={badgeStyle}>{ann.badge_text}</Badge>}
                       <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                        <AudienceIcon className="w-3.5 h-3.5" />
-                        {ann.target_audience}
+                        <AudienceIcon className="w-3.5 h-3.5" />{ann.target_audience}
                       </div>
                       <span className="text-xs text-muted-foreground ml-auto">{formatDate(ann.created_at)}</span>
                     </div>

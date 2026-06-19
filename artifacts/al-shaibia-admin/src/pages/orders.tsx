@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
-import { supabase, type Order, type User } from "@/lib/supabase";
-import { formatDZD, formatDate } from "@/lib/constants";
-import { ALGERIAN_WILAYAS } from "@/lib/constants";
+import { api } from "@/lib/api";
+import { formatDZD, formatDate, ALGERIAN_WILAYAS } from "@/lib/constants";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -23,13 +22,21 @@ const STATUS_STYLES: Record<string, string> = {
   "ملغاة من طرف المستهلك": "bg-red-500/20 text-red-500 border-red-500/20",
 };
 
-interface EnrichedOrder extends Order {
-  customerUser?: User;
-  driverUser?: User;
+interface Order {
+  id: string;
+  user_id: string;
+  driver_id: string | null;
+  water_volume: string;
+  barrel_count: number;
+  total_price: number;
+  status: string;
+  created_at: string;
+  customerUser?: { id: string; name: string; phone?: string } | null;
+  driverUser?: { id: string; name: string; phone?: string } | null;
 }
 
 export default function OrdersPage() {
-  const [orders, setOrders] = useState<EnrichedOrder[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
@@ -37,82 +44,27 @@ export default function OrdersPage() {
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const { toast } = useToast();
-
   const PAGE_SIZE = 20;
 
   useEffect(() => { setPage(0); }, [statusFilter, dateFrom, dateTo]);
-
-  useEffect(() => {
-    fetchOrders();
-  }, [statusFilter, dateFrom, dateTo, page]);
+  useEffect(() => { fetchOrders(); }, [statusFilter, dateFrom, dateTo, page]);
 
   async function fetchOrders() {
     setLoading(true);
     try {
-      // Step 1: fetch plain orders (no embed — no FK constraints in DB)
-      let query = supabase
-        .from("orders")
-        .select("*", { count: "exact" });
+      const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
+      if (statusFilter !== "all") params.set("status", statusFilter);
+      if (dateFrom) params.set("dateFrom", dateFrom);
+      if (dateTo) params.set("dateTo", dateTo);
 
-      if (statusFilter !== "all") query = query.eq("status", statusFilter);
-      if (dateFrom) query = query.gte("created_at", new Date(dateFrom).toISOString());
-      if (dateTo) {
-        const toDate = new Date(dateTo);
-        toDate.setDate(toDate.getDate() + 1);
-        query = query.lte("created_at", toDate.toISOString());
-      }
-      query = query
-        .order("created_at", { ascending: false })
-        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
-
-      const { data: rawOrders, count, error } = await query;
-      if (error) throw error;
-
-      if (count !== null) setTotalCount(count);
-
-      if (!rawOrders || rawOrders.length === 0) {
-        setOrders([]);
-        return;
-      }
-
-      // Step 2: collect all user IDs (customers + drivers), fetch in one query
-      const userIdSet = new Set<string>();
-      rawOrders.forEach((o: Order) => {
-        if (o.user_id) userIdSet.add(o.user_id);
-        if (o.driver_id) userIdSet.add(o.driver_id);
-      });
-      const allUserIds = Array.from(userIdSet);
-
-      const { data: usersData } = await supabase
-        .from("users")
-        .select("id, name, phone, wilaya")
-        .in("id", allUserIds);
-
-      const usersMap = new Map<string, User>();
-      (usersData || []).forEach((u: User) => usersMap.set(u.id, u));
-
-      // Step 3: enrich orders
-      const enriched: EnrichedOrder[] = rawOrders.map((o: Order) => ({
-        ...o,
-        customerUser: o.user_id ? usersMap.get(o.user_id) : undefined,
-        driverUser: o.driver_id ? usersMap.get(o.driver_id) : undefined,
-      }));
-
-      setOrders(enriched);
+      const result = await api.get<{ data: Order[]; count: number }>(`/orders?${params}`);
+      setOrders(result.data);
+      setTotalCount(result.count);
     } catch (err: any) {
-      console.error("fetchOrders error:", err);
       toast({ title: "Error fetching orders", description: err.message, variant: "destructive" });
     } finally {
       setLoading(false);
     }
-  }
-
-  function getStatusBadge(status: string) {
-    return (
-      <Badge variant="outline" className={STATUS_STYLES[status] || ""}>
-        {STATUS_LABELS[status] || status}
-      </Badge>
-    );
   }
 
   function handleExportCSV() {
@@ -155,9 +107,7 @@ export default function OrdersPage() {
         <div className="space-y-1">
           <label className="text-xs text-muted-foreground font-medium">Status</label>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[240px]">
-              <SelectValue placeholder="All Statuses" />
-            </SelectTrigger>
+            <SelectTrigger className="w-[240px]"><SelectValue placeholder="All Statuses" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Statuses</SelectItem>
               <SelectItem value="معلق">معلق في انتظار</SelectItem>
@@ -192,29 +142,19 @@ export default function OrdersPage() {
           <TableBody>
             {loading ? (
               Array(10).fill(0).map((_, i) => (
-                <TableRow key={i}>
-                  {Array(7).fill(0).map((__, j) => (
-                    <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>
-                  ))}
-                </TableRow>
+                <TableRow key={i}>{Array(7).fill(0).map((__, j) => <TableCell key={j}><Skeleton className="h-5 w-full" /></TableCell>)}</TableRow>
               ))
             ) : orders.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="text-center py-10 text-muted-foreground">
-                  No orders found.
-                </TableCell>
+                <TableCell colSpan={7} className="text-center py-10 text-muted-foreground">No orders found.</TableCell>
               </TableRow>
             ) : (
               orders.map((order) => (
                 <TableRow key={order.id}>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    {order.id.slice(0, 8)}…
-                  </TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">{order.id.slice(0, 8)}…</TableCell>
                   <TableCell>
                     <div className="font-medium">{order.customerUser?.name || <span className="italic text-muted-foreground">Unknown</span>}</div>
-                    {order.customerUser?.phone && (
-                      <div className="text-xs text-muted-foreground font-mono">{order.customerUser.phone}</div>
-                    )}
+                    {order.customerUser?.phone && <div className="text-xs text-muted-foreground font-mono">{order.customerUser.phone}</div>}
                   </TableCell>
                   <TableCell>
                     {order.driverUser ? (
@@ -231,7 +171,11 @@ export default function OrdersPage() {
                     <div className="text-xs text-muted-foreground">{order.barrel_count} barrel{order.barrel_count !== 1 ? "s" : ""}</div>
                   </TableCell>
                   <TableCell className="font-medium whitespace-nowrap">{formatDZD(order.total_price)}</TableCell>
-                  <TableCell>{getStatusBadge(order.status)}</TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className={STATUS_STYLES[order.status] || ""}>
+                      {STATUS_LABELS[order.status] || order.status}
+                    </Badge>
+                  </TableCell>
                   <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(order.created_at)}</TableCell>
                 </TableRow>
               ))

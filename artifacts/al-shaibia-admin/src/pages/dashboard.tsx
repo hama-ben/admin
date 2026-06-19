@@ -1,15 +1,9 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { api } from "@/lib/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDZD } from "@/lib/constants";
 import {
-  Area,
-  AreaChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-  CartesianGrid,
+  Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis, CartesianGrid,
 } from "recharts";
 import { Users, Truck, Package, CreditCard, Activity, Clock } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -22,80 +16,24 @@ interface Stats {
   totalRevenue: number;
   activeDrivers: number;
   pendingVerifications: number;
-}
-
-async function safeCount(query: any): Promise<number> {
-  const { count, error } = await query;
-  if (error) console.error("count query error:", error.message);
-  return count ?? 0;
+  chartData: { date: string; count: number }[];
 }
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
-  const [chartData, setChartData] = useState<any[]>([]);
 
   useEffect(() => {
     fetchAll();
-
-    const channel = supabase
-      .channel("dashboard-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, fetchAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, fetchAll)
-      .subscribe();
-
-    return () => { supabase.removeChannel(channel); };
+    const interval = setInterval(fetchAll, 60_000);
+    return () => clearInterval(interval);
   }, []);
 
   async function fetchAll() {
     setLoading(true);
     try {
-      // Run all counts independently so one failure doesn't block the rest
-      const [
-        totalUsers,
-        totalConsumers,
-        totalDrivers,
-        ordersCompleted,
-        pendingVerifications,
-        activeDrivers,
-      ] = await Promise.all([
-        safeCount(supabase.from("users").select("*", { count: "exact", head: true })),
-        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", "مستهلك")),
-        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", "سائق")),
-        safeCount(supabase.from("orders").select("*", { count: "exact", head: true }).eq("status", "تم التوصيل")),
-        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("account_status", "pending")),
-        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", "سائق").eq("account_status", "active")),
-      ]);
-
-      // Revenue: sum of total_price for completed orders (no embed needed)
-      const { data: completedOrders, error: revErr } = await supabase
-        .from("orders")
-        .select("total_price")
-        .eq("status", "تم التوصيل");
-      if (revErr) console.error("revenue query error:", revErr.message);
-      const totalRevenue = (completedOrders ?? []).reduce((sum, o) => sum + Number(o.total_price), 0);
-
-      // Chart: orders per day for last 30 days
-      const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      const { data: recentOrders, error: chartErr } = await supabase
-        .from("orders")
-        .select("created_at")
-        .gte("created_at", since);
-      if (chartErr) console.error("chart query error:", chartErr.message);
-
-      const daily: Record<string, number> = {};
-      (recentOrders ?? []).forEach((o) => {
-        const d = o.created_at.slice(0, 10);
-        daily[d] = (daily[d] || 0) + 1;
-      });
-      const chart = Object.entries(daily)
-        .map(([date, count]) => ({ date, count }))
-        .sort((a, b) => a.date.localeCompare(b.date));
-
-      console.log("Dashboard stats loaded:", { totalUsers, totalConsumers, totalDrivers, ordersCompleted, pendingVerifications, activeDrivers, totalRevenue });
-
-      setStats({ totalUsers, totalConsumers, totalDrivers, ordersCompleted, totalRevenue, activeDrivers, pendingVerifications });
-      setChartData(chart);
+      const data = await api.get<Stats>("/dashboard");
+      setStats(data);
     } catch (err: any) {
       console.error("Dashboard fetch error:", err);
     } finally {
@@ -107,7 +45,7 @@ export default function DashboardPage() {
     <div className="p-8 space-y-8 animate-in fade-in duration-500">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground mt-2">Live platform metrics from Supabase.</p>
+        <p className="text-muted-foreground mt-2">Live platform metrics.</p>
       </div>
 
       {loading ? (
@@ -118,7 +56,7 @@ export default function DashboardPage() {
         </div>
       ) : stats ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          <StatCard title="Total Revenue" value={formatDZD(stats.totalRevenue)} icon={CreditCard} className="lg:col-span-1" />
+          <StatCard title="Total Revenue" value={formatDZD(stats.totalRevenue)} icon={CreditCard} />
           <StatCard title="Active Drivers" value={stats.activeDrivers.toString()} icon={Activity} />
           <StatCard title="Pending Verification" value={stats.pendingVerifications.toString()} icon={Clock} valueClass="text-amber-500" />
           <StatCard title="Orders Completed" value={stats.ordersCompleted.toString()} icon={Package} />
@@ -135,9 +73,9 @@ export default function DashboardPage() {
         <CardContent className="h-[380px]">
           {loading ? (
             <Skeleton className="w-full h-full" />
-          ) : chartData.length > 0 ? (
+          ) : stats && stats.chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+              <AreaChart data={stats.chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
