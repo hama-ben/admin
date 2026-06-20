@@ -9,37 +9,58 @@ if (!supabaseUrl || !supabaseAnonKey) {
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// ─── Table types (real schema) ────────────────────────────────────────────────
+// ─── Table types (confirmed schema) ──────────────────────────────────────────
 
-/** drivers table: driver accounts. Primary key is user_id (text). */
-export interface Driver {
-  user_id: string;
-  truck_photo_url?: string | null;
-  license_photo_url?: string | null;
-  ccp_receipt_url?: string | null;
-  ccp_status?: string | null;
-  status: string;          // 'pending' | 'approved' | 'rejected'
-  is_online?: boolean;
-  created_at: string;
+/**
+ * users table — single table for ALL account types.
+ * user_type: 'سائق' = driver, 'مستهلك' = consumer
+ * account_status: 'pending' | 'approved' | 'rejected'
+ * NOTE: No created_at column on this table.
+ */
+export interface User {
+  id: string;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  user_type: string;
+  wilaya?: string | null;
+  commune?: string | null;
+  account_status?: string | null;
+  subscription_expires_at?: string | null;
+  free_trial_claimed?: boolean | null;
 }
 
-/** driver_details table: documents & location info. FK = driver_id → drivers.user_id */
+/**
+ * driver_details — driver document photos & location.
+ * FK: driver_id → users.id
+ */
 export interface DriverDetails {
   driver_id: string;
   wilaya?: string | null;
   commune?: string | null;
   truck_front_photo_url?: string | null;
   driver_license_url?: string | null;
-  truck_video_url?: string | null;
   truck_side_photo_url?: string | null;
-  is_legacy_driver?: boolean;
+  truck_video_url?: string | null;
 }
 
-/** orders table */
+/**
+ * driver_status — online/offline/busy status.
+ * FK: driver_id → users.id
+ */
+export interface DriverStatus {
+  driver_id: string;
+  current_status?: string | null;
+}
+
+/**
+ * orders table
+ * status: 'معلق' → 'قيد التوصيل' → 'وصل السائق' → 'تم التوصيل'
+ */
 export interface Order {
   id: string;
-  user_id: string;
-  driver_id: string | null;
+  user_id: string;           // customer's users.id
+  driver_id: string | null;  // driver's users.id (null until accepted)
   water_volume: string;
   barrel_count: number;
   total_price: number;
@@ -49,7 +70,10 @@ export interface Order {
   created_at: string;
 }
 
-/** subscription_payments table (UNRESTRICTED — anon can read) */
+/**
+ * subscription_payments table
+ * driver_id → users.id
+ */
 export interface SubscriptionPayment {
   id: string;
   driver_id: string;
@@ -84,3 +108,7 @@ export interface RatingDispute {
 
 export type PaymentStatus = "pending" | "approved" | "rejected";
 export type DisputeStatus = "pending" | "resolved" | "dismissed";
+
+// User type constants (confirmed Arabic values)
+export const USER_TYPE_DRIVER = "سائق";
+export const USER_TYPE_CONSUMER = "مستهلك";

@@ -1,20 +1,20 @@
 import { useEffect, useState } from "react";
-import { supabase, type Driver, type DriverDetails } from "@/lib/supabase";
+import { supabase, USER_TYPE_DRIVER, type User, type DriverDetails, type DriverStatus } from "@/lib/supabase";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Check, X, Image as ImageIcon, Clock } from "lucide-react";
-import { formatDate } from "@/lib/constants";
+import { Check, X, Image as ImageIcon, Clock, MapPin } from "lucide-react";
 
-interface PendingEntry extends Driver {
+interface PendingDriver extends User {
   details?: DriverDetails | null;
+  driverStatus?: DriverStatus | null;
 }
 
 export default function DriverQueuePage() {
-  const [drivers, setDrivers] = useState<PendingEntry[]>([]);
+  const [drivers, setDrivers] = useState<PendingDriver[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -24,7 +24,7 @@ export default function DriverQueuePage() {
     fetchPendingDrivers();
     const channel = supabase
       .channel("driver-queue-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "drivers" }, fetchPendingDrivers)
+      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, fetchPendingDrivers)
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
@@ -33,24 +33,28 @@ export default function DriverQueuePage() {
     setLoading(true);
     try {
       const { data: pending, error } = await supabase
-        .from("drivers")
-        .select("*")
-        .eq("status", "pending")
-        .order("created_at", { ascending: false });
+        .from("users")
+        .select("id, name, phone, email, wilaya, commune, account_status, user_type, subscription_expires_at")
+        .eq("user_type", USER_TYPE_DRIVER)
+        .eq("account_status", "pending");
 
       if (error) throw error;
       if (!pending || pending.length === 0) { setDrivers([]); return; }
 
-      const userIds = pending.map((d) => d.user_id);
-      const { data: details } = await supabase
-        .from("driver_details")
-        .select("*")
-        .in("driver_id", userIds);
+      const userIds = pending.map((d) => d.id);
+      const [{ data: details }, { data: statuses }] = await Promise.all([
+        supabase.from("driver_details").select("*").in("driver_id", userIds),
+        supabase.from("driver_status").select("*").in("driver_id", userIds),
+      ]);
 
-      const detailsMap = new Map<string, DriverDetails>();
-      (details ?? []).forEach((d) => detailsMap.set(d.driver_id, d));
+      const detailsMap = new Map<string, DriverDetails>((details ?? []).map((d) => [d.driver_id, d]));
+      const statusMap = new Map<string, DriverStatus>((statuses ?? []).map((s) => [s.driver_id, s]));
 
-      setDrivers(pending.map((d) => ({ ...d, details: detailsMap.get(d.user_id) ?? null })));
+      setDrivers(pending.map((d) => ({
+        ...d,
+        details: detailsMap.get(d.id) ?? null,
+        driverStatus: statusMap.get(d.id) ?? null,
+      })));
     } catch (err: any) {
       toast({ title: "Error fetching queue", description: err.message, variant: "destructive" });
     } finally {
@@ -58,13 +62,13 @@ export default function DriverQueuePage() {
     }
   }
 
-  async function handleApprove(userId: string) {
-    setActionLoading(userId);
+  async function handleApprove(driverId: string, driverName: string) {
+    setActionLoading(driverId);
     try {
       const { error } = await supabase
-        .from("drivers")
-        .update({ status: "approved" })
-        .eq("user_id", userId);
+        .from("users")
+        .update({ account_status: "approved" })
+        .eq("id", driverId);
       if (error) throw error;
 
       await supabase.from("announcements").insert({
@@ -75,8 +79,8 @@ export default function DriverQueuePage() {
         is_active: true,
       });
 
-      toast({ title: "Driver Approved", description: "The driver has been approved." });
-      setDrivers((prev) => prev.filter((d) => d.user_id !== userId));
+      toast({ title: "Driver Approved", description: `${driverName} has been approved.` });
+      setDrivers((prev) => prev.filter((d) => d.id !== driverId));
     } catch (err: any) {
       toast({ title: "Action failed", description: err.message, variant: "destructive" });
     } finally {
@@ -84,13 +88,13 @@ export default function DriverQueuePage() {
     }
   }
 
-  async function handleReject(userId: string) {
-    setActionLoading(userId);
+  async function handleReject(driverId: string, driverName: string) {
+    setActionLoading(driverId);
     try {
       const { error } = await supabase
-        .from("drivers")
-        .update({ status: "rejected" })
-        .eq("user_id", userId);
+        .from("users")
+        .update({ account_status: "rejected" })
+        .eq("id", driverId);
       if (error) throw error;
 
       await supabase.from("announcements").insert({
@@ -101,8 +105,8 @@ export default function DriverQueuePage() {
         is_active: true,
       });
 
-      toast({ title: "Driver Rejected", description: "The driver has been rejected." });
-      setDrivers((prev) => prev.filter((d) => d.user_id !== userId));
+      toast({ title: "Driver Rejected", description: `${driverName} has been rejected.` });
+      setDrivers((prev) => prev.filter((d) => d.id !== driverId));
     } catch (err: any) {
       toast({ title: "Action failed", description: err.message, variant: "destructive" });
     } finally {
@@ -139,7 +143,9 @@ export default function DriverQueuePage() {
     <div className="p-8 space-y-6 animate-in fade-in duration-500">
       <div>
         <h1 className="text-3xl font-bold tracking-tight">Driver Queue</h1>
-        <p className="text-muted-foreground mt-2">Review and approve pending driver applications.</p>
+        <p className="text-muted-foreground mt-2">
+          Pending driver applications — {loading ? "…" : drivers.length} awaiting review.
+        </p>
       </div>
 
       {loading ? (
@@ -162,32 +168,43 @@ export default function DriverQueuePage() {
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
           {drivers.map((driver) => (
-            <Card key={driver.user_id} className="flex flex-col border-border bg-card">
+            <Card key={driver.id} className="flex flex-col border-border bg-card">
               <CardHeader className="pb-3 border-b border-border/50">
                 <CardTitle className="flex justify-between items-center text-lg">
-                  <span className="font-mono text-sm text-muted-foreground truncate">{driver.user_id.slice(0, 16)}…</span>
-                  {driver.details?.wilaya && (
-                    <span className="text-xs font-normal text-muted-foreground px-2 py-1 bg-muted rounded-full shrink-0">
-                      {driver.details.wilaya}
-                    </span>
+                  <span className="font-semibold truncate">{driver.name || "—"}</span>
+                  {driver.driverStatus?.current_status && (
+                    <Badge variant="outline" className="text-xs shrink-0 ml-2">{driver.driverStatus.current_status}</Badge>
                   )}
                 </CardTitle>
-                <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <Clock className="w-3 h-3" />
-                  {formatDate(driver.created_at)}
-                  {driver.ccp_status && (
-                    <Badge variant="outline" className="text-xs ml-auto">CCP: {driver.ccp_status}</Badge>
+                <div className="space-y-1 text-xs text-muted-foreground">
+                  {driver.phone && <div className="flex items-center gap-1">📞 {driver.phone}</div>}
+                  {(driver.details?.wilaya || driver.wilaya) && (
+                    <div className="flex items-center gap-1">
+                      <MapPin className="w-3 h-3" />
+                      {driver.details?.wilaya || driver.wilaya}
+                      {(driver.details?.commune || driver.commune) && ` / ${driver.details?.commune || driver.commune}`}
+                    </div>
                   )}
+                  <div className="flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    ID: <span className="font-mono">{driver.id.slice(0, 16)}…</span>
+                  </div>
                 </div>
               </CardHeader>
 
               <CardContent className="p-4 flex-1">
                 <div className="grid grid-cols-2 gap-3">
-                  <PhotoBox url={driver.truck_photo_url} label="Truck" />
-                  <PhotoBox url={driver.license_photo_url} label="License" />
-                  {driver.ccp_receipt_url && <PhotoBox url={driver.ccp_receipt_url} label="CCP Receipt" />}
-                  {driver.details?.truck_front_photo_url && <PhotoBox url={driver.details.truck_front_photo_url} label="Truck Front" />}
-                  {driver.details?.driver_license_url && <PhotoBox url={driver.details.driver_license_url} label="Driver License" />}
+                  <PhotoBox url={driver.details?.truck_front_photo_url} label="Truck Front" />
+                  <PhotoBox url={driver.details?.driver_license_url} label="License" />
+                  {driver.details?.truck_side_photo_url && <PhotoBox url={driver.details.truck_side_photo_url} label="Truck Side" />}
+                  {driver.details?.truck_video_url && (
+                    <div className="border rounded-md overflow-hidden aspect-video relative bg-muted flex items-center justify-center">
+                      <a href={driver.details.truck_video_url} target="_blank" rel="noopener noreferrer" className="text-primary text-xs underline">
+                        View Video
+                      </a>
+                      <div className="absolute bottom-0 inset-x-0 bg-background/80 text-[10px] uppercase font-bold text-center py-1">Truck Video</div>
+                    </div>
+                  )}
                 </div>
               </CardContent>
 
@@ -195,15 +212,15 @@ export default function DriverQueuePage() {
                 <Button
                   variant="outline"
                   className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/10 border-red-500/20 gap-1.5"
-                  onClick={() => handleReject(driver.user_id)}
-                  disabled={actionLoading === driver.user_id}
+                  onClick={() => handleReject(driver.id, driver.name)}
+                  disabled={actionLoading === driver.id}
                 >
                   <X className="w-4 h-4" /> رفض
                 </Button>
                 <Button
                   className="w-full bg-green-600 hover:bg-green-700 text-white gap-1.5"
-                  onClick={() => handleApprove(driver.user_id)}
-                  disabled={actionLoading === driver.user_id}
+                  onClick={() => handleApprove(driver.id, driver.name)}
+                  disabled={actionLoading === driver.id}
                 >
                   <Check className="w-4 h-4" /> قبول
                 </Button>

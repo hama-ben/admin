@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabase";
+import { supabase, USER_TYPE_DRIVER, USER_TYPE_CONSUMER } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDZD } from "@/lib/constants";
 import {
@@ -12,9 +12,9 @@ interface Stats {
   totalDrivers: number;
   activeDrivers: number;
   pendingVerifications: number;
+  totalConsumers: number;
   ordersCompleted: number;
   totalRevenue: number;
-  approvedPayments: number;
 }
 
 async function safeCount(query: any): Promise<number> {
@@ -33,7 +33,7 @@ export default function DashboardPage() {
     const channel = supabase
       .channel("dashboard-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, fetchAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "drivers" }, fetchAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, fetchAll)
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
@@ -43,16 +43,16 @@ export default function DashboardPage() {
     try {
       const [
         totalDrivers,
-        activeDrivers,
         pendingVerifications,
+        activeDrivers,
+        totalConsumers,
         ordersCompleted,
-        approvedPayments,
       ] = await Promise.all([
-        safeCount(supabase.from("drivers").select("*", { count: "exact", head: true })),
-        safeCount(supabase.from("drivers").select("*", { count: "exact", head: true }).eq("status", "approved").eq("is_online", true)),
-        safeCount(supabase.from("drivers").select("*", { count: "exact", head: true }).eq("status", "pending")),
+        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", USER_TYPE_DRIVER)),
+        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", USER_TYPE_DRIVER).eq("account_status", "pending")),
+        safeCount(supabase.from("driver_status").select("*", { count: "exact", head: true }).eq("current_status", "online")),
+        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", USER_TYPE_CONSUMER)),
         safeCount(supabase.from("orders").select("*", { count: "exact", head: true }).eq("status", "تم التوصيل")),
-        safeCount(supabase.from("subscription_payments").select("*", { count: "exact", head: true }).eq("status", "approved")),
       ]);
 
       const { data: completedOrders } = await supabase
@@ -78,7 +78,7 @@ export default function DashboardPage() {
           .sort((a, b) => a.date.localeCompare(b.date))
       );
 
-      setStats({ totalDrivers, activeDrivers, pendingVerifications, ordersCompleted, totalRevenue, approvedPayments });
+      setStats({ totalDrivers, activeDrivers, pendingVerifications, totalConsumers, ordersCompleted, totalRevenue });
     } catch (err: any) {
       console.error("Dashboard fetch error:", err);
     } finally {
@@ -101,12 +101,12 @@ export default function DashboardPage() {
         </div>
       ) : stats ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          <StatCard title="Total Revenue" value={formatDZD(stats.totalRevenue)} icon={CreditCard} />
-          <StatCard title="Active Drivers" value={stats.activeDrivers.toString()} icon={Activity} />
-          <StatCard title="Pending Verification" value={stats.pendingVerifications.toString()} icon={Clock} valueClass="text-amber-500" />
-          <StatCard title="Orders Completed" value={stats.ordersCompleted.toString()} icon={Package} />
-          <StatCard title="Total Drivers" value={stats.totalDrivers.toString()} icon={Truck} />
-          <StatCard title="Approved Subscriptions" value={stats.approvedPayments.toString()} icon={Users} />
+          <StatCard title="Total Revenue" value={formatDZD(stats.totalRevenue ?? 0)} icon={CreditCard} />
+          <StatCard title="Active Drivers" value={String(stats.activeDrivers ?? 0)} icon={Activity} />
+          <StatCard title="Pending Verification" value={String(stats.pendingVerifications ?? 0)} icon={Clock} valueClass="text-amber-500" />
+          <StatCard title="Orders Completed" value={String(stats.ordersCompleted ?? 0)} icon={Package} />
+          <StatCard title="Total Drivers" value={String(stats.totalDrivers ?? 0)} icon={Truck} />
+          <StatCard title="Total Consumers" value={String(stats.totalConsumers ?? 0)} icon={Users} />
         </div>
       ) : null}
 

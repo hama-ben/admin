@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase, type Order, type Driver } from "@/lib/supabase";
+import { supabase, type Order, type User } from "@/lib/supabase";
 import { formatDZD, formatDate } from "@/lib/constants";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -10,20 +10,18 @@ import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
-const STATUS_LABELS: Record<string, string> = {
-  "معلق": "معلق في انتظار",
-  "تم التوصيل": "مكتمل",
-  "ملغاة من طرف المستهلك": "ملغاة من طرف المستهلك",
-};
+const ORDER_STATUSES = ["معلق", "قيد التوصيل", "وصل السائق", "تم التوصيل"];
 
 const STATUS_STYLES: Record<string, string> = {
-  "معلق": "bg-amber-500/20 text-amber-500 border-amber-500/20",
-  "تم التوصيل": "bg-green-500/20 text-green-500 border-green-500/20",
-  "ملغاة من طرف المستهلك": "bg-red-500/20 text-red-500 border-red-500/20",
+  "معلق":          "bg-amber-500/20 text-amber-500 border-amber-500/20",
+  "قيد التوصيل":   "bg-blue-500/20 text-blue-400 border-blue-500/20",
+  "وصل السائق":   "bg-purple-500/20 text-purple-400 border-purple-500/20",
+  "تم التوصيل":   "bg-green-500/20 text-green-500 border-green-500/20",
 };
 
 interface EnrichedOrder extends Order {
-  driverRow?: Driver | null;
+  customerUser?: Pick<User, "id" | "name" | "phone"> | null;
+  driverUser?: Pick<User, "id" | "name" | "phone"> | null;
 }
 
 export default function OrdersPage() {
@@ -47,8 +45,7 @@ export default function OrdersPage() {
       if (statusFilter !== "all") query = query.eq("status", statusFilter);
       if (dateFrom) query = query.gte("created_at", new Date(dateFrom).toISOString());
       if (dateTo) {
-        const to = new Date(dateTo);
-        to.setDate(to.getDate() + 1);
+        const to = new Date(dateTo); to.setDate(to.getDate() + 1);
         query = query.lte("created_at", to.toISOString());
       }
       query = query.order("created_at", { ascending: false }).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
@@ -59,17 +56,24 @@ export default function OrdersPage() {
 
       if (!rawOrders || rawOrders.length === 0) { setOrders([]); return; }
 
-      // Enrich with driver info from drivers table
+      // Collect all user IDs (customers + drivers)
+      const customerIds = [...new Set(rawOrders.map((o: Order) => o.user_id).filter(Boolean))];
       const driverIds = [...new Set(rawOrders.map((o: Order) => o.driver_id).filter(Boolean))] as string[];
-      let driversMap = new Map<string, Driver>();
-      if (driverIds.length > 0) {
-        const { data: driversData } = await supabase.from("drivers").select("*").in("user_id", driverIds);
-        (driversData ?? []).forEach((d: Driver) => driversMap.set(d.user_id, d));
+      const allIds = [...new Set([...customerIds, ...driverIds])];
+
+      let usersMap = new Map<string, Pick<User, "id" | "name" | "phone">>();
+      if (allIds.length > 0) {
+        const { data: usersData } = await supabase
+          .from("users")
+          .select("id, name, phone")
+          .in("id", allIds);
+        (usersData ?? []).forEach((u: any) => usersMap.set(u.id, u));
       }
 
       setOrders(rawOrders.map((o: Order) => ({
         ...o,
-        driverRow: o.driver_id ? driversMap.get(o.driver_id) ?? null : null,
+        customerUser: usersMap.get(o.user_id) ?? null,
+        driverUser: o.driver_id ? usersMap.get(o.driver_id) ?? null : null,
       })));
     } catch (err: any) {
       toast({ title: "Error fetching orders", description: err.message, variant: "destructive" });
@@ -79,14 +83,21 @@ export default function OrdersPage() {
   }
 
   function handleExportCSV() {
-    const headers = ["Order ID", "Customer ID", "Driver ID", "Water Volume", "Barrels", "Price (DZD)", "Status", "Date"];
+    const headers = ["Order ID", "Customer", "Customer Phone", "Driver", "Driver Phone", "Volume", "Barrels", "Price (DZD)", "Status", "Date"];
     const rows = orders.map((o) => [
-      o.id, o.user_id, o.driver_id || "Unassigned",
-      `"${o.water_volume}"`, o.barrel_count, o.total_price,
-      `"${STATUS_LABELS[o.status] || o.status}"`, formatDate(o.created_at),
+      o.id,
+      `"${o.customerUser?.name || o.user_id}"`,
+      o.customerUser?.phone || "",
+      `"${o.driverUser?.name || o.driver_id || "Unassigned"}"`,
+      o.driverUser?.phone || "",
+      `"${o.water_volume}"`,
+      o.barrel_count,
+      o.total_price,
+      `"${o.status}"`,
+      formatDate(o.created_at),
     ].join(","));
     const csv = [headers.join(","), ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
     link.download = `orders_${new Date().toISOString().split("T")[0]}.csv`;
@@ -112,12 +123,10 @@ export default function OrdersPage() {
         <div className="space-y-1">
           <label className="text-xs text-muted-foreground font-medium">Status</label>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-[240px]"><SelectValue placeholder="All Statuses" /></SelectTrigger>
+            <SelectTrigger className="w-[220px]"><SelectValue placeholder="All Statuses" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Statuses</SelectItem>
-              <SelectItem value="معلق">معلق في انتظار</SelectItem>
-              <SelectItem value="تم التوصيل">مكتمل</SelectItem>
-              <SelectItem value="ملغاة من طرف المستهلك">ملغاة من طرف المستهلك</SelectItem>
+              {ORDER_STATUSES.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
@@ -136,7 +145,7 @@ export default function OrdersPage() {
           <TableHeader>
             <TableRow className="bg-muted/50">
               <TableHead>Order ID</TableHead>
-              <TableHead>Customer ID</TableHead>
+              <TableHead>Customer</TableHead>
               <TableHead>Driver</TableHead>
               <TableHead>Details</TableHead>
               <TableHead>Price</TableHead>
@@ -157,15 +166,16 @@ export default function OrdersPage() {
               orders.map((order) => (
                 <TableRow key={order.id}>
                   <TableCell className="font-mono text-xs text-muted-foreground">{order.id.slice(0, 8)}…</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">{order.user_id.slice(0, 12)}…</TableCell>
                   <TableCell>
-                    {order.driverRow ? (
+                    <div className="font-medium text-sm">{order.customerUser?.name || "—"}</div>
+                    {order.customerUser?.phone && <div className="text-xs text-muted-foreground">{order.customerUser.phone}</div>}
+                  </TableCell>
+                  <TableCell>
+                    {order.driverUser ? (
                       <div>
-                        <div className="font-mono text-xs text-muted-foreground">{order.driverRow.user_id.slice(0, 12)}…</div>
-                        <div className="text-xs text-muted-foreground">CCP: {order.driverRow.ccp_status || "—"}</div>
+                        <div className="font-medium text-sm">{order.driverUser.name}</div>
+                        {order.driverUser.phone && <div className="text-xs text-muted-foreground">{order.driverUser.phone}</div>}
                       </div>
-                    ) : order.driver_id ? (
-                      <span className="font-mono text-xs text-muted-foreground">{order.driver_id.slice(0, 12)}…</span>
                     ) : (
                       <span className="italic text-muted-foreground text-sm">Unassigned</span>
                     )}
@@ -176,9 +186,7 @@ export default function OrdersPage() {
                   </TableCell>
                   <TableCell className="font-medium whitespace-nowrap">{formatDZD(order.total_price)}</TableCell>
                   <TableCell>
-                    <Badge variant="outline" className={STATUS_STYLES[order.status] || ""}>
-                      {STATUS_LABELS[order.status] || order.status}
-                    </Badge>
+                    <Badge variant="outline" className={STATUS_STYLES[order.status] || ""}>{order.status}</Badge>
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground whitespace-nowrap">{formatDate(order.created_at)}</TableCell>
                 </TableRow>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { supabase, type SubscriptionPayment, type Driver, type PaymentStatus } from "@/lib/supabase";
+import { supabase, type SubscriptionPayment, type User, type PaymentStatus } from "@/lib/supabase";
 import { formatDate } from "@/lib/constants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,7 @@ import {
 type ChartType = "bar" | "pie";
 
 interface EnrichedPayment extends SubscriptionPayment {
-  driver?: Driver | null;
+  driverUser?: Pick<User, "id" | "name" | "phone" | "wilaya"> | null;
 }
 
 export default function PaymentsPage() {
@@ -26,7 +26,7 @@ export default function PaymentsPage() {
   const [loading, setLoading] = useState(true);
   const [statusTab, setStatusTab] = useState<PaymentStatus>("pending");
   const [approvedCount, setApprovedCount] = useState(0);
-  const [wilayaRevenue, setWilayaRevenue] = useState<{ wilaya: string; count: number }[]>([]);
+  const [wilayaData, setWilayaData] = useState<{ wilaya: string; count: number }[]>([]);
   const [chartType, setChartType] = useState<ChartType>("bar");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -40,9 +40,12 @@ export default function PaymentsPage() {
   async function enrichWithDrivers(payments: SubscriptionPayment[]): Promise<EnrichedPayment[]> {
     if (payments.length === 0) return [];
     const driverIds = [...new Set(payments.map((p) => p.driver_id).filter(Boolean))];
-    const { data: drivers } = await supabase.from("drivers").select("*").in("user_id", driverIds);
-    const driversMap = new Map((drivers ?? []).map((d: Driver) => [d.user_id, d]));
-    return payments.map((p) => ({ ...p, driver: driversMap.get(p.driver_id) ?? null }));
+    const { data: usersData } = await supabase
+      .from("users")
+      .select("id, name, phone, wilaya")
+      .in("id", driverIds);
+    const usersMap = new Map((usersData ?? []).map((u: any) => [u.id, u]));
+    return payments.map((p) => ({ ...p, driverUser: usersMap.get(p.driver_id) ?? null }));
   }
 
   async function fetchPayments() {
@@ -71,19 +74,26 @@ export default function PaymentsPage() {
 
       setApprovedCount(approved?.length ?? 0);
 
-      // NOTE: drivers table has no wilaya column — wilaya is in driver_details
-      // We show count by driver_id prefix as a placeholder until driver_details is joined
-      const byDriver: Record<string, number> = {};
-      (approved ?? []).forEach((p) => {
-        const key = p.driver_id?.slice(0, 8) || "Unknown";
-        byDriver[key] = (byDriver[key] || 0) + 1;
-      });
-      setWilayaRevenue(
-        Object.entries(byDriver)
-          .map(([wilaya, count]) => ({ wilaya, count }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 10)
-      );
+      if (approved && approved.length > 0) {
+        const driverIds = [...new Set(approved.map((p: any) => p.driver_id).filter(Boolean))];
+        const { data: usersData } = await supabase
+          .from("users")
+          .select("id, wilaya")
+          .in("id", driverIds);
+        const wilayaMap: Record<string, number> = {};
+        (usersData ?? []).forEach((u: any) => {
+          const key = u.wilaya || "Unknown";
+          wilayaMap[key] = (wilayaMap[key] || 0) + 1;
+        });
+        setWilayaData(
+          Object.entries(wilayaMap)
+            .map(([wilaya, count]) => ({ wilaya, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10)
+        );
+      } else {
+        setWilayaData([]);
+      }
     } catch (err) {
       console.error("Summary error", err);
     }
@@ -144,11 +154,11 @@ export default function PaymentsPage() {
 
   const CHART_COLORS = ["hsl(185,70%,45%)", "hsl(210,80%,60%)", "hsl(150,60%,45%)", "hsl(30,80%,55%)", "hsl(270,60%,60%)"];
 
-  const getTabStyle = (s: PaymentStatus) => ({
+  const STATUS_STYLES: Record<PaymentStatus, string> = {
     pending:  "bg-amber-500/20 text-amber-500 border-amber-500/20",
     approved: "bg-green-500/20 text-green-500 border-green-500/20",
     rejected: "bg-red-500/20 text-red-500 border-red-500/20",
-  }[s]);
+  };
 
   return (
     <div className="p-8 space-y-6 animate-in fade-in duration-500">
@@ -174,7 +184,7 @@ export default function PaymentsPage() {
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-base">Approved by Driver</CardTitle>
+              <CardTitle className="text-base">Approved by Wilaya</CardTitle>
               <Select value={chartType} onValueChange={(v) => setChartType(v as ChartType)}>
                 <SelectTrigger className="w-[100px] h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -185,20 +195,20 @@ export default function PaymentsPage() {
             </div>
           </CardHeader>
           <CardContent className="h-[160px]">
-            {wilayaRevenue.length === 0 ? (
+            {wilayaData.length === 0 ? (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No approved payments yet.</div>
             ) : chartType === "pie" ? (
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
-                  <Pie data={wilayaRevenue} dataKey="count" nameKey="wilaya" outerRadius={60}>
-                    {wilayaRevenue.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                  <Pie data={wilayaData} dataKey="count" nameKey="wilaya" outerRadius={60}>
+                    {wilayaData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                   </Pie>
                   <Tooltip contentStyle={{ backgroundColor: "hsl(220 22% 12%)", borderColor: "hsl(220 20% 18%)", borderRadius: "8px" }} />
                 </PieChart>
               </ResponsiveContainer>
             ) : (
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={wilayaRevenue}>
+                <BarChart data={wilayaData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 20% 18%)" vertical={false} />
                   <XAxis dataKey="wilaya" stroke="hsl(210 15% 55%)" tickLine={false} axisLine={false} tick={{ fontSize: 10 }} />
                   <YAxis stroke="hsl(210 15% 55%)" tickLine={false} axisLine={false} allowDecimals={false} />
@@ -240,10 +250,11 @@ export default function PaymentsPage() {
               <CardContent className="p-5 flex flex-col gap-4 flex-1">
                 <div className="flex justify-between items-start">
                   <div>
-                    <p className="font-semibold text-base font-mono text-sm">{payment.driver_id.slice(0, 16)}…</p>
-                    <p className="text-xs text-muted-foreground mt-0.5">CCP: {payment.driver?.ccp_status || "—"}</p>
+                    <p className="font-semibold text-base">{payment.driverUser?.name || "—"}</p>
+                    {payment.driverUser?.phone && <p className="text-xs text-muted-foreground mt-0.5">{payment.driverUser.phone}</p>}
+                    {payment.driverUser?.wilaya && <p className="text-xs text-muted-foreground">{payment.driverUser.wilaya}</p>}
                   </div>
-                  <Badge variant="outline" className={getTabStyle(payment.status)}>{payment.status}</Badge>
+                  <Badge variant="outline" className={STATUS_STYLES[payment.status]}>{payment.status}</Badge>
                 </div>
 
                 {payment.receipt_image ? (
