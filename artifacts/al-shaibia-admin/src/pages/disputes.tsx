@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo } from "react";
-import { api } from "@/lib/api";
+import { supabase, type RatingDispute, type DisputeStatus } from "@/lib/supabase";
 import { formatDate } from "@/lib/constants";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -11,25 +11,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { useToast } from "@/hooks/use-toast";
 import { AlertTriangle, Search, Eye, Star } from "lucide-react";
 
-type DisputeStatus = "pending" | "resolved" | "dismissed";
-
-interface Dispute {
-  id: string;
-  driver_id: string | null;
-  rating: number;
-  comment: string | null;
-  wilaya: string | null;
-  status: DisputeStatus;
-  created_at: string;
-  user?: {
-    id: string;
-    name: string;
-    user_type: string;
-    phone?: string;
-    wilaya?: string;
-  } | null;
-}
-
 const STATUS_LABELS: Record<DisputeStatus, string> = {
   pending: "معلق",
   resolved: "تمت المعالجة",
@@ -40,12 +21,6 @@ const STATUS_STYLES: Record<DisputeStatus, string> = {
   pending: "bg-amber-500/20 text-amber-400 border-amber-500/20",
   resolved: "bg-green-500/20 text-green-400 border-green-500/20",
   dismissed: "bg-slate-500/20 text-slate-400 border-slate-500/20",
-};
-
-const USER_TYPE_LABELS: Record<string, string> = {
-  driver: "سائق",
-  consumer: "مستهلك",
-  customer: "مستهلك",
 };
 
 function StarRating({ rating }: { rating: number }) {
@@ -60,25 +35,31 @@ function StarRating({ rating }: { rating: number }) {
 }
 
 export default function DisputesPage() {
-  const [disputes, setDisputes] = useState<Dispute[]>([]);
+  const [disputes, setDisputes] = useState<RatingDispute[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [userTypeFilter, setUserTypeFilter] = useState<string>("all");
-  const [selected, setSelected] = useState<Dispute | null>(null);
+  const [selected, setSelected] = useState<RatingDispute | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
     fetchDisputes();
-    const interval = setInterval(fetchDisputes, 30_000);
-    return () => clearInterval(interval);
+    const channel = supabase
+      .channel("disputes-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "ratings_disputes" }, fetchDisputes)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   async function fetchDisputes() {
     setLoading(true);
     try {
-      const data = await api.get<Dispute[]>("/disputes");
-      setDisputes(data);
+      const { data, error } = await supabase
+        .from("ratings_disputes")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setDisputes((data as RatingDispute[]) ?? []);
     } catch (err: any) {
       toast({ title: "خطأ في جلب البيانات", description: err.message, variant: "destructive" });
     } finally {
@@ -88,25 +69,21 @@ export default function DisputesPage() {
 
   const handleStatusChange = async (id: string, status: DisputeStatus) => {
     try {
-      await api.patch(`/disputes/${id}`, { status });
+      const { error } = await supabase.from("ratings_disputes").update({ status }).eq("id", id);
+      if (error) throw error;
       setDisputes((prev) => prev.map((d) => d.id === id ? { ...d, status } : d));
       if (selected?.id === id) setSelected((s) => s ? { ...s, status } : null);
-      toast({ title: "تم تحديث الحالة", description: `تم تغيير الحالة إلى "${STATUS_LABELS[status]}"` });
+      toast({ title: "تم تحديث الحالة", description: `"${STATUS_LABELS[status]}"` });
     } catch (err: any) {
       toast({ title: "فشل التحديث", description: err.message, variant: "destructive" });
     }
   };
 
-  const filtered = useMemo(() => {
-    return disputes.filter((d) => {
-      const name = d.user?.name?.toLowerCase() ?? "";
-      const comment = d.comment?.toLowerCase() ?? "";
-      const matchSearch = !search || name.includes(search.toLowerCase()) || comment.includes(search.toLowerCase());
-      const matchStatus = statusFilter === "all" || d.status === statusFilter;
-      const matchType = userTypeFilter === "all" || d.user?.user_type === userTypeFilter;
-      return matchSearch && matchStatus && matchType;
-    });
-  }, [disputes, search, statusFilter, userTypeFilter]);
+  const filtered = useMemo(() => disputes.filter((d) => {
+    const matchSearch = !search || d.comment?.toLowerCase().includes(search.toLowerCase()) || d.driver_id?.includes(search) || d.wilaya?.includes(search);
+    const matchStatus = statusFilter === "all" || d.status === statusFilter;
+    return matchSearch && matchStatus;
+  }), [disputes, search, statusFilter]);
 
   const pendingCount = disputes.filter((d) => d.status === "pending").length;
 
@@ -115,7 +92,7 @@ export default function DisputesPage() {
       <div className="flex items-start justify-between">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">النزاعات والشكاوى</h1>
-          <p className="text-muted-foreground mt-1">مراجعة رسائل الدعم وتقييمات المستخدمين.</p>
+          <p className="text-muted-foreground mt-1">مراجعة تقييمات السائقين والنزاعات.</p>
         </div>
         {pendingCount > 0 && (
           <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/20 border text-sm px-3 py-1">
@@ -127,7 +104,7 @@ export default function DisputesPage() {
       <div className="flex flex-wrap items-center gap-3 bg-card p-4 rounded-lg border border-border">
         <div className="relative flex-1 min-w-[200px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input placeholder="بحث بالاسم أو المحتوى..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <Input placeholder="بحث بالتعليق أو الولاية..." className="pl-9" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
           <SelectTrigger className="w-[180px]"><SelectValue placeholder="الحالة" /></SelectTrigger>
@@ -138,14 +115,6 @@ export default function DisputesPage() {
             <SelectItem value="dismissed">مغلق</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={userTypeFilter} onValueChange={setUserTypeFilter}>
-          <SelectTrigger className="w-[160px]"><SelectValue placeholder="نوع المستخدم" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">الكل</SelectItem>
-            <SelectItem value="driver">سائق</SelectItem>
-            <SelectItem value="consumer">مستهلك</SelectItem>
-          </SelectContent>
-        </Select>
         <span className="text-sm text-muted-foreground ml-auto">{filtered.length} نتيجة</span>
       </div>
 
@@ -153,9 +122,9 @@ export default function DisputesPage() {
         <Table>
           <TableHeader>
             <TableRow className="bg-muted/50">
-              <TableHead>المستخدم</TableHead>
-              <TableHead>النوع</TableHead>
+              <TableHead>Driver ID</TableHead>
               <TableHead>التقييم</TableHead>
+              <TableHead>الولاية</TableHead>
               <TableHead className="w-[30%]">الرسالة</TableHead>
               <TableHead>الحالة</TableHead>
               <TableHead>التاريخ</TableHead>
@@ -178,16 +147,16 @@ export default function DisputesPage() {
             ) : (
               filtered.map((dispute) => (
                 <TableRow key={dispute.id}>
-                  <TableCell className="font-medium">
-                    <p>{dispute.user?.name ?? "مستخدم مجهول"}</p>
-                    {dispute.user?.phone && <p className="text-xs text-muted-foreground">{dispute.user.phone}</p>}
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-sm">{USER_TYPE_LABELS[dispute.user?.user_type ?? ""] ?? dispute.user?.user_type ?? "—"}</span>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {dispute.driver_id?.slice(0, 12) ?? "—"}…
                   </TableCell>
                   <TableCell><StarRating rating={dispute.rating} /></TableCell>
+                  <TableCell className="text-sm">{dispute.wilaya || "—"}</TableCell>
                   <TableCell className="text-sm text-muted-foreground">
-                    {dispute.comment ? <span className="line-clamp-2">{dispute.comment}</span> : <span className="italic opacity-50">لا توجد رسالة</span>}
+                    {dispute.comment
+                      ? <span className="line-clamp-2">{dispute.comment}</span>
+                      : <span className="italic opacity-50">لا توجد رسالة</span>
+                    }
                   </TableCell>
                   <TableCell>
                     <Select value={dispute.status} onValueChange={(v) => handleStatusChange(dispute.id, v as DisputeStatus)}>
@@ -220,12 +189,13 @@ export default function DisputesPage() {
           {selected && (
             <div className="space-y-4 pt-2">
               <div className="grid grid-cols-2 gap-4 text-sm">
-                <div><p className="text-muted-foreground text-xs mb-1">المستخدم</p><p className="font-medium">{selected.user?.name ?? "مجهول"}</p></div>
-                <div><p className="text-muted-foreground text-xs mb-1">النوع</p><p>{USER_TYPE_LABELS[selected.user?.user_type ?? ""] ?? "—"}</p></div>
-                <div><p className="text-muted-foreground text-xs mb-1">الولاية</p><p>{selected.wilaya ?? selected.user?.wilaya ?? "—"}</p></div>
+                <div><p className="text-muted-foreground text-xs mb-1">Driver ID</p><p className="font-mono text-xs">{selected.driver_id?.slice(0, 20) ?? "—"}</p></div>
+                <div><p className="text-muted-foreground text-xs mb-1">الولاية</p><p>{selected.wilaya ?? "—"}</p></div>
                 <div><p className="text-muted-foreground text-xs mb-1">التاريخ</p><p>{formatDate(selected.created_at)}</p></div>
                 <div><p className="text-muted-foreground text-xs mb-1">التقييم</p><StarRating rating={selected.rating} /></div>
-                <div><p className="text-muted-foreground text-xs mb-1">الحالة</p><Badge variant="outline" className={STATUS_STYLES[selected.status]}>{STATUS_LABELS[selected.status]}</Badge></div>
+                <div className="col-span-2"><p className="text-muted-foreground text-xs mb-1">الحالة</p>
+                  <Badge variant="outline" className={STATUS_STYLES[selected.status]}>{STATUS_LABELS[selected.status]}</Badge>
+                </div>
               </div>
               <div>
                 <p className="text-muted-foreground text-xs mb-1">الرسالة / التعليق</p>

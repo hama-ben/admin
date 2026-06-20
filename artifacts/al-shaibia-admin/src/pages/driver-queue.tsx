@@ -1,42 +1,20 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { supabase, type Driver, type DriverDetails } from "@/lib/supabase";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Check, X, Image as ImageIcon } from "lucide-react";
+import { Check, X, Image as ImageIcon, Clock } from "lucide-react";
+import { formatDate } from "@/lib/constants";
 
-interface DriverDetails {
-  driver_id: string;
-  wilaya?: string;
-  commune?: string;
-  truck_front_photo_url?: string | null;
-  driver_license_url?: string | null;
-  truck_side_photo_url?: string | null;
-  truck_video_url?: string | null;
-}
-
-interface PendingDriver {
-  user_id: string;
-  status: string;
-  truck_photo_url?: string | null;
-  license_photo_url?: string | null;
-  ccp_receipt_url?: string | null;
-  ccp_status?: string | null;
-  created_at: string;
-  user?: {
-    id: string;
-    name: string;
-    phone?: string;
-    wilaya?: string;
-    commune?: string;
-  } | null;
+interface PendingEntry extends Driver {
   details?: DriverDetails | null;
 }
 
 export default function DriverQueuePage() {
-  const [drivers, setDrivers] = useState<PendingDriver[]>([]);
+  const [drivers, setDrivers] = useState<PendingEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -44,15 +22,35 @@ export default function DriverQueuePage() {
 
   useEffect(() => {
     fetchPendingDrivers();
-    const interval = setInterval(fetchPendingDrivers, 30_000);
-    return () => clearInterval(interval);
+    const channel = supabase
+      .channel("driver-queue-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "drivers" }, fetchPendingDrivers)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   async function fetchPendingDrivers() {
     setLoading(true);
     try {
-      const data = await api.get<PendingDriver[]>("/drivers/pending");
-      setDrivers(data);
+      const { data: pending, error } = await supabase
+        .from("drivers")
+        .select("*")
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
+
+      if (error) throw error;
+      if (!pending || pending.length === 0) { setDrivers([]); return; }
+
+      const userIds = pending.map((d) => d.user_id);
+      const { data: details } = await supabase
+        .from("driver_details")
+        .select("*")
+        .in("driver_id", userIds);
+
+      const detailsMap = new Map<string, DriverDetails>();
+      (details ?? []).forEach((d) => detailsMap.set(d.driver_id, d));
+
+      setDrivers(pending.map((d) => ({ ...d, details: detailsMap.get(d.user_id) ?? null })));
     } catch (err: any) {
       toast({ title: "Error fetching queue", description: err.message, variant: "destructive" });
     } finally {
@@ -63,7 +61,20 @@ export default function DriverQueuePage() {
   async function handleApprove(userId: string) {
     setActionLoading(userId);
     try {
-      await api.patch(`/drivers/${userId}/status`, { status: "approved" });
+      const { error } = await supabase
+        .from("drivers")
+        .update({ status: "approved" })
+        .eq("user_id", userId);
+      if (error) throw error;
+
+      await supabase.from("announcements").insert({
+        title: "تم قبولك بيننا",
+        content: "مرحبا بك في منصة الشعيبية",
+        target_audience: "Drivers",
+        badge_text: "Success",
+        is_active: true,
+      });
+
       toast({ title: "Driver Approved", description: "The driver has been approved." });
       setDrivers((prev) => prev.filter((d) => d.user_id !== userId));
     } catch (err: any) {
@@ -76,7 +87,20 @@ export default function DriverQueuePage() {
   async function handleReject(userId: string) {
     setActionLoading(userId);
     try {
-      await api.patch(`/drivers/${userId}/status`, { status: "rejected" });
+      const { error } = await supabase
+        .from("drivers")
+        .update({ status: "rejected" })
+        .eq("user_id", userId);
+      if (error) throw error;
+
+      await supabase.from("announcements").insert({
+        title: "تم رفض طلبك",
+        content: "عذراً، لم يتم قبول طلبك. يرجى التواصل معنا عبر الفيسبوك: https://www.facebook.com/profile.php?id=61590856328769",
+        target_audience: "Drivers",
+        badge_text: "Warning",
+        is_active: true,
+      });
+
       toast({ title: "Driver Rejected", description: "The driver has been rejected." });
       setDrivers((prev) => prev.filter((d) => d.user_id !== userId));
     } catch (err: any) {
@@ -89,7 +113,7 @@ export default function DriverQueuePage() {
   function PhotoBox({ url, label }: { url?: string | null; label: string }) {
     return (
       <div
-        className="border rounded-md overflow-hidden aspect-video relative group cursor-pointer"
+        className="border rounded-md overflow-hidden aspect-video relative group cursor-pointer bg-muted"
         onClick={() => url && setSelectedImage(url)}
       >
         {url ? (
@@ -100,7 +124,7 @@ export default function DriverQueuePage() {
             </div>
           </>
         ) : (
-          <div className="w-full h-full bg-muted flex items-center justify-center text-xs text-muted-foreground text-center p-2">
+          <div className="w-full h-full flex items-center justify-center text-xs text-muted-foreground text-center p-2">
             No Image
           </div>
         )}
@@ -123,12 +147,8 @@ export default function DriverQueuePage() {
           {Array(6).fill(0).map((_, i) => (
             <Card key={i}>
               <CardContent className="p-6 space-y-4">
-                <Skeleton className="h-6 w-3/4" />
-                <Skeleton className="h-4 w-1/2" />
-                <div className="grid grid-cols-2 gap-3">
-                  <Skeleton className="h-24 w-full" />
-                  <Skeleton className="h-24 w-full" />
-                </div>
+                <Skeleton className="h-6 w-3/4" /><Skeleton className="h-4 w-1/2" />
+                <div className="grid grid-cols-2 gap-3"><Skeleton className="h-24 w-full" /><Skeleton className="h-24 w-full" /></div>
               </CardContent>
             </Card>
           ))}
@@ -141,60 +161,55 @@ export default function DriverQueuePage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-          {drivers.map((driver) => {
-            const name = driver.user?.name ?? driver.user_id;
-            const phone = driver.user?.phone;
-            const wilaya = driver.user?.wilaya;
-            return (
-              <Card key={driver.user_id} className="flex flex-col border-border bg-card">
-                <CardHeader className="pb-3 border-b border-border/50">
-                  <CardTitle className="flex justify-between items-center text-lg">
-                    <span>{name}</span>
-                    {wilaya && (
-                      <span className="text-xs font-normal text-muted-foreground px-2 py-1 bg-muted rounded-full">
-                        {wilaya}
-                      </span>
-                    )}
-                  </CardTitle>
-                  {phone && <div className="text-sm text-muted-foreground font-mono">{phone}</div>}
-                </CardHeader>
+          {drivers.map((driver) => (
+            <Card key={driver.user_id} className="flex flex-col border-border bg-card">
+              <CardHeader className="pb-3 border-b border-border/50">
+                <CardTitle className="flex justify-between items-center text-lg">
+                  <span className="font-mono text-sm text-muted-foreground truncate">{driver.user_id.slice(0, 16)}…</span>
+                  {driver.details?.wilaya && (
+                    <span className="text-xs font-normal text-muted-foreground px-2 py-1 bg-muted rounded-full shrink-0">
+                      {driver.details.wilaya}
+                    </span>
+                  )}
+                </CardTitle>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Clock className="w-3 h-3" />
+                  {formatDate(driver.created_at)}
+                  {driver.ccp_status && (
+                    <Badge variant="outline" className="text-xs ml-auto">CCP: {driver.ccp_status}</Badge>
+                  )}
+                </div>
+              </CardHeader>
 
-                <CardContent className="p-4 flex-1">
-                  <div className="grid grid-cols-2 gap-3">
-                    <PhotoBox url={driver.truck_photo_url} label="Truck" />
-                    <PhotoBox url={driver.license_photo_url} label="License" />
-                    {driver.ccp_receipt_url && (
-                      <PhotoBox url={driver.ccp_receipt_url} label="CCP Receipt" />
-                    )}
-                    {driver.details?.truck_front_photo_url && (
-                      <PhotoBox url={driver.details.truck_front_photo_url} label="Truck Front" />
-                    )}
-                    {driver.details?.driver_license_url && (
-                      <PhotoBox url={driver.details.driver_license_url} label="Driver License" />
-                    )}
-                  </div>
-                </CardContent>
+              <CardContent className="p-4 flex-1">
+                <div className="grid grid-cols-2 gap-3">
+                  <PhotoBox url={driver.truck_photo_url} label="Truck" />
+                  <PhotoBox url={driver.license_photo_url} label="License" />
+                  {driver.ccp_receipt_url && <PhotoBox url={driver.ccp_receipt_url} label="CCP Receipt" />}
+                  {driver.details?.truck_front_photo_url && <PhotoBox url={driver.details.truck_front_photo_url} label="Truck Front" />}
+                  {driver.details?.driver_license_url && <PhotoBox url={driver.details.driver_license_url} label="Driver License" />}
+                </div>
+              </CardContent>
 
-                <CardFooter className="grid grid-cols-2 gap-3 p-4 bg-muted/10 border-t border-border">
-                  <Button
-                    variant="outline"
-                    className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/10 border-red-500/20 gap-1.5"
-                    onClick={() => handleReject(driver.user_id)}
-                    disabled={actionLoading === driver.user_id}
-                  >
-                    <X className="w-4 h-4" /> رفض
-                  </Button>
-                  <Button
-                    className="w-full bg-green-600 hover:bg-green-700 text-white gap-1.5"
-                    onClick={() => handleApprove(driver.user_id)}
-                    disabled={actionLoading === driver.user_id}
-                  >
-                    <Check className="w-4 h-4" /> قبول
-                  </Button>
-                </CardFooter>
-              </Card>
-            );
-          })}
+              <CardFooter className="grid grid-cols-2 gap-3 p-4 bg-muted/10 border-t border-border">
+                <Button
+                  variant="outline"
+                  className="w-full text-red-500 hover:text-red-600 hover:bg-red-500/10 border-red-500/20 gap-1.5"
+                  onClick={() => handleReject(driver.user_id)}
+                  disabled={actionLoading === driver.user_id}
+                >
+                  <X className="w-4 h-4" /> رفض
+                </Button>
+                <Button
+                  className="w-full bg-green-600 hover:bg-green-700 text-white gap-1.5"
+                  onClick={() => handleApprove(driver.user_id)}
+                  disabled={actionLoading === driver.user_id}
+                >
+                  <Check className="w-4 h-4" /> قبول
+                </Button>
+              </CardFooter>
+            </Card>
+          ))}
         </div>
       )}
 

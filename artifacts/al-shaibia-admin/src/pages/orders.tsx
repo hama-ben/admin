@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
-import { formatDZD, formatDate, ALGERIAN_WILAYAS } from "@/lib/constants";
+import { supabase, type Order, type Driver } from "@/lib/supabase";
+import { formatDZD, formatDate } from "@/lib/constants";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -22,21 +22,12 @@ const STATUS_STYLES: Record<string, string> = {
   "ملغاة من طرف المستهلك": "bg-red-500/20 text-red-500 border-red-500/20",
 };
 
-interface Order {
-  id: string;
-  user_id: string;
-  driver_id: string | null;
-  water_volume: string;
-  barrel_count: number;
-  total_price: number;
-  status: string;
-  created_at: string;
-  customerUser?: { id: string; name: string; phone?: string } | null;
-  driverUser?: { id: string; name: string; phone?: string } | null;
+interface EnrichedOrder extends Order {
+  driverRow?: Driver | null;
 }
 
 export default function OrdersPage() {
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [orders, setOrders] = useState<EnrichedOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("all");
   const [dateFrom, setDateFrom] = useState("");
@@ -52,14 +43,34 @@ export default function OrdersPage() {
   async function fetchOrders() {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page: String(page), pageSize: String(PAGE_SIZE) });
-      if (statusFilter !== "all") params.set("status", statusFilter);
-      if (dateFrom) params.set("dateFrom", dateFrom);
-      if (dateTo) params.set("dateTo", dateTo);
+      let query = supabase.from("orders").select("*", { count: "exact" });
+      if (statusFilter !== "all") query = query.eq("status", statusFilter);
+      if (dateFrom) query = query.gte("created_at", new Date(dateFrom).toISOString());
+      if (dateTo) {
+        const to = new Date(dateTo);
+        to.setDate(to.getDate() + 1);
+        query = query.lte("created_at", to.toISOString());
+      }
+      query = query.order("created_at", { ascending: false }).range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1);
 
-      const result = await api.get<{ data: Order[]; count: number }>(`/orders?${params}`);
-      setOrders(result.data);
-      setTotalCount(result.count);
+      const { data: rawOrders, count, error } = await query;
+      if (error) throw error;
+      if (count !== null) setTotalCount(count);
+
+      if (!rawOrders || rawOrders.length === 0) { setOrders([]); return; }
+
+      // Enrich with driver info from drivers table
+      const driverIds = [...new Set(rawOrders.map((o: Order) => o.driver_id).filter(Boolean))] as string[];
+      let driversMap = new Map<string, Driver>();
+      if (driverIds.length > 0) {
+        const { data: driversData } = await supabase.from("drivers").select("*").in("user_id", driverIds);
+        (driversData ?? []).forEach((d: Driver) => driversMap.set(d.user_id, d));
+      }
+
+      setOrders(rawOrders.map((o: Order) => ({
+        ...o,
+        driverRow: o.driver_id ? driversMap.get(o.driver_id) ?? null : null,
+      })));
     } catch (err: any) {
       toast({ title: "Error fetching orders", description: err.message, variant: "destructive" });
     } finally {
@@ -68,17 +79,11 @@ export default function OrdersPage() {
   }
 
   function handleExportCSV() {
-    const headers = ["Order ID", "Customer", "Customer Phone", "Driver", "Water Volume", "Barrels", "Price (DZD)", "Status", "Date"];
+    const headers = ["Order ID", "Customer ID", "Driver ID", "Water Volume", "Barrels", "Price (DZD)", "Status", "Date"];
     const rows = orders.map((o) => [
-      o.id,
-      `"${o.customerUser?.name || "N/A"}"`,
-      `"${o.customerUser?.phone || ""}"`,
-      `"${o.driverUser?.name || "Unassigned"}"`,
-      `"${o.water_volume}"`,
-      o.barrel_count,
-      o.total_price,
-      `"${STATUS_LABELS[o.status] || o.status}"`,
-      formatDate(o.created_at),
+      o.id, o.user_id, o.driver_id || "Unassigned",
+      `"${o.water_volume}"`, o.barrel_count, o.total_price,
+      `"${STATUS_LABELS[o.status] || o.status}"`, formatDate(o.created_at),
     ].join(","));
     const csv = [headers.join(","), ...rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -131,7 +136,7 @@ export default function OrdersPage() {
           <TableHeader>
             <TableRow className="bg-muted/50">
               <TableHead>Order ID</TableHead>
-              <TableHead>Customer</TableHead>
+              <TableHead>Customer ID</TableHead>
               <TableHead>Driver</TableHead>
               <TableHead>Details</TableHead>
               <TableHead>Price</TableHead>
@@ -152,16 +157,15 @@ export default function OrdersPage() {
               orders.map((order) => (
                 <TableRow key={order.id}>
                   <TableCell className="font-mono text-xs text-muted-foreground">{order.id.slice(0, 8)}…</TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">{order.user_id.slice(0, 12)}…</TableCell>
                   <TableCell>
-                    <div className="font-medium">{order.customerUser?.name || <span className="italic text-muted-foreground">Unknown</span>}</div>
-                    {order.customerUser?.phone && <div className="text-xs text-muted-foreground font-mono">{order.customerUser.phone}</div>}
-                  </TableCell>
-                  <TableCell>
-                    {order.driverUser ? (
+                    {order.driverRow ? (
                       <div>
-                        <div className="font-medium">{order.driverUser.name}</div>
-                        <div className="text-xs text-muted-foreground font-mono">{order.driverUser.phone}</div>
+                        <div className="font-mono text-xs text-muted-foreground">{order.driverRow.user_id.slice(0, 12)}…</div>
+                        <div className="text-xs text-muted-foreground">CCP: {order.driverRow.ccp_status || "—"}</div>
                       </div>
+                    ) : order.driver_id ? (
+                      <span className="font-mono text-xs text-muted-foreground">{order.driver_id.slice(0, 12)}…</span>
                     ) : (
                       <span className="italic text-muted-foreground text-sm">Unassigned</span>
                     )}

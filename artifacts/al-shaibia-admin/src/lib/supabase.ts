@@ -4,36 +4,38 @@ const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error(
-    "Missing Supabase environment variables. Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY."
-  );
+  throw new Error("Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY");
 }
 
-// Anon client — used only for realtime subscriptions (if needed)
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-// All data queries now go through /api/data/* (Express server with service role key)
-// Types kept here for reference
+// ─── Table types (real schema) ────────────────────────────────────────────────
 
-export type DriverStatus = "pending" | "approved" | "rejected" | "active";
-export type PaymentStatus = "pending" | "approved" | "rejected";
-export type BadgeType = "Info" | "Warning" | "Success" | "Promo";
-export type TargetAudience = "Everyone" | "Drivers" | "Consumers";
-export type DisputeStatus = "pending" | "resolved" | "dismissed";
-
-export interface User {
-  id: string;
-  name: string;
-  email?: string;
-  phone?: string;
-  user_type: string;
-  wilaya?: string;
-  commune?: string;
-  account_status?: string;
-  subscription_expires_at?: string;
-  free_trial_claimed?: boolean;
+/** drivers table: driver accounts. Primary key is user_id (text). */
+export interface Driver {
+  user_id: string;
+  truck_photo_url?: string | null;
+  license_photo_url?: string | null;
+  ccp_receipt_url?: string | null;
+  ccp_status?: string | null;
+  status: string;          // 'pending' | 'approved' | 'rejected'
+  is_online?: boolean;
+  created_at: string;
 }
 
+/** driver_details table: documents & location info. FK = driver_id → drivers.user_id */
+export interface DriverDetails {
+  driver_id: string;
+  wilaya?: string | null;
+  commune?: string | null;
+  truck_front_photo_url?: string | null;
+  driver_license_url?: string | null;
+  truck_video_url?: string | null;
+  truck_side_photo_url?: string | null;
+  is_legacy_driver?: boolean;
+}
+
+/** orders table */
 export interface Order {
   id: string;
   user_id: string;
@@ -47,24 +49,38 @@ export interface Order {
   created_at: string;
 }
 
+/** subscription_payments table (UNRESTRICTED — anon can read) */
 export interface SubscriptionPayment {
   id: string;
   driver_id: string;
   receipt_image?: string | null;
-  status: PaymentStatus;
+  status: "pending" | "approved" | "rejected";
   admin_notes?: string | null;
   created_at: string;
   reviewed_at?: string | null;
-  driver?: User;
-  [key: string]: any;
 }
 
+/** announcements table */
 export interface Announcement {
   id: string;
   title: string;
-  badge_text?: string;
-  target_audience: string;
   content: string;
+  target_audience: string;
+  badge_text?: string | null;
   is_active: boolean;
   created_at: string;
 }
+
+/** ratings_disputes table */
+export interface RatingDispute {
+  id: string;
+  driver_id: string | null;
+  rating: number;
+  comment: string | null;
+  wilaya: string | null;
+  status: "pending" | "resolved" | "dismissed";
+  created_at: string;
+}
+
+export type PaymentStatus = "pending" | "approved" | "rejected";
+export type DisputeStatus = "pending" | "resolved" | "dismissed";

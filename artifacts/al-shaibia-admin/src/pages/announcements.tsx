@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { supabase, type Announcement } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,35 +15,25 @@ import { useToast } from "@/hooks/use-toast";
 import { Megaphone, Send, Users, Truck, Globe } from "lucide-react";
 import { formatDate } from "@/lib/constants";
 
-interface Announcement {
-  id: string;
-  title: string;
-  badge_text?: string;
-  target_audience: string;
-  content: string;
-  is_active: boolean;
-  created_at: string;
-}
-
 const BADGE_STYLES: Record<string, string> = {
-  Info: "bg-blue-500/20 text-blue-400 border-blue-500/20",
+  Info:    "bg-blue-500/20 text-blue-400 border-blue-500/20",
   Warning: "bg-amber-500/20 text-amber-400 border-amber-500/20",
   Success: "bg-green-500/20 text-green-400 border-green-500/20",
-  Promo: "bg-purple-500/20 text-purple-400 border-purple-500/20",
+  Promo:   "bg-purple-500/20 text-purple-400 border-purple-500/20",
 };
 
 const AUDIENCE_ICONS: Record<string, typeof Globe> = {
-  Everyone: Globe,
-  Drivers: Truck,
+  Everyone:  Globe,
+  Drivers:   Truck,
   Consumers: Users,
-  all: Globe,
+  all:       Globe,
 };
 
 const formSchema = z.object({
-  title: z.string().min(1, "Title is required"),
-  badge_text: z.enum(["Info", "Warning", "Success", "Promo"] as const),
+  title:           z.string().min(1, "Title is required"),
+  badge_text:      z.enum(["Info", "Warning", "Success", "Promo"] as const),
   target_audience: z.enum(["Everyone", "Drivers", "Consumers"] as const),
-  content: z.string().min(1, "Message is required"),
+  content:         z.string().min(1, "Message is required"),
 });
 
 type FormValues = z.infer<typeof formSchema>;
@@ -61,13 +51,24 @@ export default function AnnouncementsPage() {
 
   useEffect(() => {
     fetchAnnouncements();
+    const channel = supabase
+      .channel("announcements-realtime")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "announcements" }, (payload) => {
+        setAnnouncements((prev) => [payload.new as Announcement, ...prev]);
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   async function fetchAnnouncements() {
     setLoading(true);
     try {
-      const data = await api.get<Announcement[]>("/announcements");
-      setAnnouncements(data);
+      const { data, error } = await supabase
+        .from("announcements")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setAnnouncements(data ?? []);
     } catch (err: any) {
       toast({ title: "Error fetching announcements", description: err.message, variant: "destructive" });
     } finally {
@@ -78,8 +79,14 @@ export default function AnnouncementsPage() {
   const onSubmit = async (values: FormValues) => {
     setSubmitting(true);
     try {
-      const newAnn = await api.post<Announcement>("/announcements", values);
-      setAnnouncements((prev) => [newAnn, ...prev]);
+      const { error } = await supabase.from("announcements").insert({
+        title:           values.title,
+        badge_text:      values.badge_text,
+        target_audience: values.target_audience,
+        content:         values.content,
+        is_active:       true,
+      });
+      if (error) throw error;
       toast({ title: "Announcement published", description: "Your announcement is now live." });
       form.reset();
     } catch (err: any) {
@@ -118,7 +125,7 @@ export default function AnnouncementsPage() {
                   <FormItem>
                     <FormLabel>Badge Type</FormLabel>
                     <Select onValueChange={field.onChange} defaultValue={field.value}>
-                      <FormControl><SelectTrigger><SelectValue placeholder="Select badge type" /></SelectTrigger></FormControl>
+                      <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
                       <SelectContent>
                         <SelectItem value="Info">Info</SelectItem>
                         <SelectItem value="Warning">Warning</SelectItem>
@@ -134,7 +141,7 @@ export default function AnnouncementsPage() {
                   <FormItem>
                     <FormLabel>Target Audience</FormLabel>
                     <Select onValueChange={field.onChange} defaultValue={field.value}>
-                      <FormControl><SelectTrigger><SelectValue placeholder="Select audience" /></SelectTrigger></FormControl>
+                      <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
                       <SelectContent>
                         <SelectItem value="Everyone">Everyone</SelectItem>
                         <SelectItem value="Drivers">Drivers</SelectItem>

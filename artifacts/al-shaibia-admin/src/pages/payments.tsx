@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
-import { formatDZD, formatDate } from "@/lib/constants";
+import { supabase, type SubscriptionPayment, type Driver, type PaymentStatus } from "@/lib/supabase";
+import { formatDate } from "@/lib/constants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -15,34 +15,18 @@ import {
   ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip,
 } from "recharts";
 
-type PaymentStatus = "pending" | "approved" | "rejected";
 type ChartType = "bar" | "pie";
 
-interface Payment {
-  id: string;
-  driver_id: string;
-  receipt_image?: string | null;
-  status: PaymentStatus;
-  admin_notes?: string | null;
-  created_at: string;
-  reviewed_at?: string | null;
-  driver?: {
-    id: string;
-    name: string;
-    phone?: string;
-    wilaya?: string;
-    subscription_expires_at?: string;
-  } | null;
-  [key: string]: any;
+interface EnrichedPayment extends SubscriptionPayment {
+  driver?: Driver | null;
 }
 
 export default function PaymentsPage() {
-  const [payments, setPayments] = useState<Payment[]>([]);
+  const [payments, setPayments] = useState<EnrichedPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [statusTab, setStatusTab] = useState<PaymentStatus>("pending");
-  const [totalRevenue, setTotalRevenue] = useState(0);
-  const [wilayaRevenue, setWilayaRevenue] = useState<{ wilaya: string; count: number }[]>([]);
   const [approvedCount, setApprovedCount] = useState(0);
+  const [wilayaRevenue, setWilayaRevenue] = useState<{ wilaya: string; count: number }[]>([]);
   const [chartType, setChartType] = useState<ChartType>("bar");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -50,14 +34,27 @@ export default function PaymentsPage() {
 
   useEffect(() => {
     fetchPayments();
-    fetchRevenueSummary();
+    fetchSummary();
   }, [statusTab]);
+
+  async function enrichWithDrivers(payments: SubscriptionPayment[]): Promise<EnrichedPayment[]> {
+    if (payments.length === 0) return [];
+    const driverIds = [...new Set(payments.map((p) => p.driver_id).filter(Boolean))];
+    const { data: drivers } = await supabase.from("drivers").select("*").in("user_id", driverIds);
+    const driversMap = new Map((drivers ?? []).map((d: Driver) => [d.user_id, d]));
+    return payments.map((p) => ({ ...p, driver: driversMap.get(p.driver_id) ?? null }));
+  }
 
   async function fetchPayments() {
     setLoading(true);
     try {
-      const data = await api.get<Payment[]>(`/payments?status=${statusTab}`);
-      setPayments(data);
+      const { data, error } = await supabase
+        .from("subscription_payments")
+        .select("*")
+        .eq("status", statusTab)
+        .order("created_at", { ascending: false });
+      if (error) throw error;
+      setPayments(await enrichWithDrivers(data ?? []));
     } catch (err: any) {
       toast({ title: "Error fetching payments", description: err.message, variant: "destructive" });
     } finally {
@@ -65,28 +62,53 @@ export default function PaymentsPage() {
     }
   }
 
-  async function fetchRevenueSummary() {
+  async function fetchSummary() {
     try {
-      const data = await api.get<{ approvedCount: number; totalRevenue: number; wilayaRevenue: { wilaya: string; count: number }[] }>("/payments/summary");
-      setApprovedCount(data.approvedCount);
-      setTotalRevenue(data.totalRevenue);
-      setWilayaRevenue(data.wilayaRevenue);
+      const { data: approved } = await supabase
+        .from("subscription_payments")
+        .select("driver_id")
+        .eq("status", "approved");
+
+      setApprovedCount(approved?.length ?? 0);
+
+      // NOTE: drivers table has no wilaya column — wilaya is in driver_details
+      // We show count by driver_id prefix as a placeholder until driver_details is joined
+      const byDriver: Record<string, number> = {};
+      (approved ?? []).forEach((p) => {
+        const key = p.driver_id?.slice(0, 8) || "Unknown";
+        byDriver[key] = (byDriver[key] || 0) + 1;
+      });
+      setWilayaRevenue(
+        Object.entries(byDriver)
+          .map(([wilaya, count]) => ({ wilaya, count }))
+          .sort((a, b) => b.count - a.count)
+          .slice(0, 10)
+      );
     } catch (err) {
-      console.error("Revenue summary error", err);
+      console.error("Summary error", err);
     }
   }
 
-  async function handleApprove(payment: Payment) {
+  async function handleApprove(payment: EnrichedPayment) {
     setActionLoading(payment.id);
     try {
-      await api.patch(`/payments/${payment.id}`, {
-        status: "approved",
-        driver_id: payment.driver_id,
-        subscription_expires_at: payment.driver?.subscription_expires_at,
+      const { error } = await supabase
+        .from("subscription_payments")
+        .update({ status: "approved", reviewed_at: new Date().toISOString() })
+        .eq("id", payment.id);
+      if (error) throw error;
+
+      await supabase.from("announcements").insert({
+        title: "تم قبول دفع وصلك",
+        content: "تم إضافة 30 يوم إلى حسابك",
+        target_audience: "Drivers",
+        badge_text: "Success",
+        is_active: true,
       });
-      toast({ title: "Payment Confirmed", description: "Subscription extended by 30 days." });
+
+      toast({ title: "Payment Confirmed", description: "Subscription approved." });
       setPayments((prev) => prev.filter((p) => p.id !== payment.id));
-      fetchRevenueSummary();
+      fetchSummary();
     } catch (err: any) {
       toast({ title: "Action failed", description: err.message, variant: "destructive" });
     } finally {
@@ -94,10 +116,23 @@ export default function PaymentsPage() {
     }
   }
 
-  async function handleReject(payment: Payment) {
+  async function handleReject(payment: EnrichedPayment) {
     setActionLoading(payment.id);
     try {
-      await api.patch(`/payments/${payment.id}`, { status: "rejected" });
+      const { error } = await supabase
+        .from("subscription_payments")
+        .update({ status: "rejected", reviewed_at: new Date().toISOString() })
+        .eq("id", payment.id);
+      if (error) throw error;
+
+      await supabase.from("announcements").insert({
+        title: "تم رفض دفعك",
+        content: "عذراً، لم يتم قبول وصل الدفع. يرجى التواصل معنا: https://www.facebook.com/profile.php?id=61590856328769",
+        target_audience: "Drivers",
+        badge_text: "Warning",
+        is_active: true,
+      });
+
       toast({ title: "Payment Rejected", description: "Driver has been notified." });
       setPayments((prev) => prev.filter((p) => p.id !== payment.id));
     } catch (err: any) {
@@ -109,45 +144,11 @@ export default function PaymentsPage() {
 
   const CHART_COLORS = ["hsl(185,70%,45%)", "hsl(210,80%,60%)", "hsl(150,60%,45%)", "hsl(30,80%,55%)", "hsl(270,60%,60%)"];
 
-  const getTabBadge = (status: PaymentStatus) => {
-    switch (status) {
-      case "pending": return "bg-amber-500/20 text-amber-500 border-amber-500/20";
-      case "approved": return "bg-green-500/20 text-green-500 border-green-500/20";
-      case "rejected": return "bg-red-500/20 text-red-500 border-red-500/20";
-    }
-  };
-
-  const renderChart = () => {
-    if (wilayaRevenue.length === 0) {
-      return <div className="flex h-full items-center justify-center text-muted-foreground">No approved payment data yet.</div>;
-    }
-    if (chartType === "pie") {
-      return (
-        <ResponsiveContainer width="100%" height="100%">
-          <PieChart>
-            <Pie data={wilayaRevenue} dataKey="count" nameKey="wilaya" outerRadius={110}
-              label={({ wilaya, percent }) => `${wilaya} (${(percent * 100).toFixed(0)}%)`}>
-              {wilayaRevenue.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
-            </Pie>
-            <Tooltip formatter={(val: number) => [val, "Approved Payments"]}
-              contentStyle={{ backgroundColor: "hsl(220 22% 12%)", borderColor: "hsl(220 20% 18%)", borderRadius: "8px" }} />
-          </PieChart>
-        </ResponsiveContainer>
-      );
-    }
-    return (
-      <ResponsiveContainer width="100%" height="100%">
-        <BarChart data={wilayaRevenue}>
-          <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 20% 18%)" vertical={false} />
-          <XAxis dataKey="wilaya" stroke="hsl(210 15% 55%)" tickLine={false} axisLine={false} tick={{ fontSize: 11 }} />
-          <YAxis stroke="hsl(210 15% 55%)" tickLine={false} axisLine={false} allowDecimals={false} />
-          <Tooltip formatter={(val: number) => [val, "Approved Payments"]}
-            contentStyle={{ backgroundColor: "hsl(220 22% 12%)", borderColor: "hsl(220 20% 18%)", borderRadius: "8px" }} />
-          <Bar dataKey="count" fill="hsl(185,70%,45%)" radius={[4, 4, 0, 0]} />
-        </BarChart>
-      </ResponsiveContainer>
-    );
-  };
+  const getTabStyle = (s: PaymentStatus) => ({
+    pending:  "bg-amber-500/20 text-amber-500 border-amber-500/20",
+    approved: "bg-green-500/20 text-green-500 border-green-500/20",
+    rejected: "bg-red-500/20 text-red-500 border-red-500/20",
+  }[s]);
 
   return (
     <div className="p-8 space-y-6 animate-in fade-in duration-500">
@@ -173,7 +174,7 @@ export default function PaymentsPage() {
         <Card>
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-base">Payments by Wilaya</CardTitle>
+              <CardTitle className="text-base">Approved by Driver</CardTitle>
               <Select value={chartType} onValueChange={(v) => setChartType(v as ChartType)}>
                 <SelectTrigger className="w-[100px] h-8 text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
@@ -183,12 +184,32 @@ export default function PaymentsPage() {
               </Select>
             </div>
           </CardHeader>
+          <CardContent className="h-[160px]">
+            {wilayaRevenue.length === 0 ? (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">No approved payments yet.</div>
+            ) : chartType === "pie" ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={wilayaRevenue} dataKey="count" nameKey="wilaya" outerRadius={60}>
+                    {wilayaRevenue.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip contentStyle={{ backgroundColor: "hsl(220 22% 12%)", borderColor: "hsl(220 20% 18%)", borderRadius: "8px" }} />
+                </PieChart>
+              </ResponsiveContainer>
+            ) : (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={wilayaRevenue}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 20% 18%)" vertical={false} />
+                  <XAxis dataKey="wilaya" stroke="hsl(210 15% 55%)" tickLine={false} axisLine={false} tick={{ fontSize: 10 }} />
+                  <YAxis stroke="hsl(210 15% 55%)" tickLine={false} axisLine={false} allowDecimals={false} />
+                  <Tooltip contentStyle={{ backgroundColor: "hsl(220 22% 12%)", borderColor: "hsl(220 20% 18%)", borderRadius: "8px" }} />
+                  <Bar dataKey="count" fill="hsl(185,70%,45%)" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </CardContent>
         </Card>
       </div>
-
-      <Card>
-        <CardContent className="h-[280px] pt-6">{renderChart()}</CardContent>
-      </Card>
 
       <Tabs value={statusTab} onValueChange={(v) => setStatusTab(v as PaymentStatus)}>
         <TabsList className="grid w-[360px] grid-cols-3">
@@ -214,62 +235,58 @@ export default function PaymentsPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {payments.map((payment) => {
-            const receiptUrl = payment.receipt_image || null;
-            return (
-              <Card key={payment.id} className="flex flex-col border-border bg-card">
-                <CardContent className="p-5 flex flex-col gap-4 flex-1">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <p className="font-semibold text-base">{payment.driver?.name || "Unknown Driver"}</p>
-                      <p className="text-sm text-muted-foreground font-mono">{payment.driver?.phone}</p>
-                      {payment.driver?.wilaya && <p className="text-xs text-muted-foreground">{payment.driver.wilaya}</p>}
-                    </div>
-                    <Badge variant="outline" className={getTabBadge(payment.status)}>{payment.status}</Badge>
+          {payments.map((payment) => (
+            <Card key={payment.id} className="flex flex-col border-border bg-card">
+              <CardContent className="p-5 flex flex-col gap-4 flex-1">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="font-semibold text-base font-mono text-sm">{payment.driver_id.slice(0, 16)}…</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">CCP: {payment.driver?.ccp_status || "—"}</p>
                   </div>
+                  <Badge variant="outline" className={getTabStyle(payment.status)}>{payment.status}</Badge>
+                </div>
 
-                  {receiptUrl ? (
-                    <div
-                      className="relative w-full h-36 rounded-md overflow-hidden border border-border cursor-pointer group"
-                      onClick={() => setSelectedImage(receiptUrl)}
+                {payment.receipt_image ? (
+                  <div
+                    className="relative w-full h-36 rounded-md overflow-hidden border border-border cursor-pointer group"
+                    onClick={() => setSelectedImage(payment.receipt_image!)}
+                  >
+                    <img src={payment.receipt_image} alt="Receipt" className="object-cover w-full h-full" />
+                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
+                      <ImageIcon className="w-6 h-6 text-white" />
+                      <span className="text-white text-sm font-medium">View Receipt</span>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="w-full h-24 rounded-md border border-dashed border-border flex items-center justify-center text-sm text-muted-foreground">
+                    No receipt uploaded
+                  </div>
+                )}
+
+                <p className="text-xs text-muted-foreground">{formatDate(payment.created_at)}</p>
+
+                {payment.status === "pending" && (
+                  <div className="grid grid-cols-2 gap-3 mt-auto">
+                    <Button
+                      variant="outline"
+                      className="text-red-500 hover:text-red-600 hover:bg-red-500/10 border-red-500/20 gap-1"
+                      onClick={() => handleReject(payment)}
+                      disabled={actionLoading === payment.id}
                     >
-                      <img src={receiptUrl} alt="Receipt" className="object-cover w-full h-full" />
-                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2">
-                        <ImageIcon className="w-6 h-6 text-white" />
-                        <span className="text-white text-sm font-medium">View Receipt</span>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="w-full h-24 rounded-md border border-dashed border-border flex items-center justify-center text-sm text-muted-foreground">
-                      No receipt uploaded
-                    </div>
-                  )}
-
-                  <p className="text-xs text-muted-foreground">{formatDate(payment.created_at)}</p>
-
-                  {payment.status === "pending" && (
-                    <div className="grid grid-cols-2 gap-3 mt-auto">
-                      <Button
-                        variant="outline"
-                        className="text-red-500 hover:text-red-600 hover:bg-red-500/10 border-red-500/20 gap-1"
-                        onClick={() => handleReject(payment)}
-                        disabled={actionLoading === payment.id}
-                      >
-                        <X className="w-4 h-4" /> رفض
-                      </Button>
-                      <Button
-                        className="bg-green-600 hover:bg-green-700 text-white gap-1"
-                        onClick={() => handleApprove(payment)}
-                        disabled={actionLoading === payment.id}
-                      >
-                        <Check className="w-4 h-4" /> تأكيد
-                      </Button>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
+                      <X className="w-4 h-4" /> رفض
+                    </Button>
+                    <Button
+                      className="bg-green-600 hover:bg-green-700 text-white gap-1"
+                      onClick={() => handleApprove(payment)}
+                      disabled={actionLoading === payment.id}
+                    >
+                      <Check className="w-4 h-4" /> تأكيد
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          ))}
         </div>
       )}
 

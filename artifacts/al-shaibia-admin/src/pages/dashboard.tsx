@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDZD } from "@/lib/constants";
 import {
@@ -9,31 +9,76 @@ import { Users, Truck, Package, CreditCard, Activity, Clock } from "lucide-react
 import { Skeleton } from "@/components/ui/skeleton";
 
 interface Stats {
-  totalUsers: number;
-  totalConsumers: number;
   totalDrivers: number;
-  ordersCompleted: number;
-  totalRevenue: number;
   activeDrivers: number;
   pendingVerifications: number;
-  chartData: { date: string; count: number }[];
+  ordersCompleted: number;
+  totalRevenue: number;
+  approvedPayments: number;
+}
+
+async function safeCount(query: any): Promise<number> {
+  const { count, error } = await query;
+  if (error) console.error("count query error:", error.message);
+  return count ?? 0;
 }
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [chartData, setChartData] = useState<{ date: string; count: number }[]>([]);
 
   useEffect(() => {
     fetchAll();
-    const interval = setInterval(fetchAll, 60_000);
-    return () => clearInterval(interval);
+    const channel = supabase
+      .channel("dashboard-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, fetchAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "drivers" }, fetchAll)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
   }, []);
 
   async function fetchAll() {
     setLoading(true);
     try {
-      const data = await api.get<Stats>("/dashboard");
-      setStats(data);
+      const [
+        totalDrivers,
+        activeDrivers,
+        pendingVerifications,
+        ordersCompleted,
+        approvedPayments,
+      ] = await Promise.all([
+        safeCount(supabase.from("drivers").select("*", { count: "exact", head: true })),
+        safeCount(supabase.from("drivers").select("*", { count: "exact", head: true }).eq("status", "approved").eq("is_online", true)),
+        safeCount(supabase.from("drivers").select("*", { count: "exact", head: true }).eq("status", "pending")),
+        safeCount(supabase.from("orders").select("*", { count: "exact", head: true }).eq("status", "تم التوصيل")),
+        safeCount(supabase.from("subscription_payments").select("*", { count: "exact", head: true }).eq("status", "approved")),
+      ]);
+
+      const { data: completedOrders } = await supabase
+        .from("orders")
+        .select("total_price")
+        .eq("status", "تم التوصيل");
+      const totalRevenue = (completedOrders ?? []).reduce((s, o) => s + Number(o.total_price), 0);
+
+      const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: recentOrders } = await supabase
+        .from("orders")
+        .select("created_at")
+        .gte("created_at", since);
+
+      const daily: Record<string, number> = {};
+      (recentOrders ?? []).forEach((o) => {
+        const d = o.created_at.slice(0, 10);
+        daily[d] = (daily[d] || 0) + 1;
+      });
+      setChartData(
+        Object.entries(daily)
+          .map(([date, count]) => ({ date, count }))
+          .sort((a, b) => a.date.localeCompare(b.date))
+      );
+
+      setStats({ totalDrivers, activeDrivers, pendingVerifications, ordersCompleted, totalRevenue, approvedPayments });
     } catch (err: any) {
       console.error("Dashboard fetch error:", err);
     } finally {
@@ -49,20 +94,19 @@ export default function DashboardPage() {
       </div>
 
       {loading ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          {Array(7).fill(0).map((_, i) => (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          {Array(6).fill(0).map((_, i) => (
             <Card key={i}><CardContent className="p-6"><Skeleton className="h-4 w-24 mb-4" /><Skeleton className="h-8 w-20" /></CardContent></Card>
           ))}
         </div>
       ) : stats ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           <StatCard title="Total Revenue" value={formatDZD(stats.totalRevenue)} icon={CreditCard} />
           <StatCard title="Active Drivers" value={stats.activeDrivers.toString()} icon={Activity} />
           <StatCard title="Pending Verification" value={stats.pendingVerifications.toString()} icon={Clock} valueClass="text-amber-500" />
           <StatCard title="Orders Completed" value={stats.ordersCompleted.toString()} icon={Package} />
-          <StatCard title="Total Users" value={stats.totalUsers.toString()} icon={Users} />
-          <StatCard title="Consumers" value={stats.totalConsumers.toString()} icon={Users} />
           <StatCard title="Total Drivers" value={stats.totalDrivers.toString()} icon={Truck} />
+          <StatCard title="Approved Subscriptions" value={stats.approvedPayments.toString()} icon={Users} />
         </div>
       ) : null}
 
@@ -73,9 +117,9 @@ export default function DashboardPage() {
         <CardContent className="h-[380px]">
           {loading ? (
             <Skeleton className="w-full h-full" />
-          ) : stats && stats.chartData.length > 0 ? (
+          ) : chartData.length > 0 ? (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={stats.chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+              <AreaChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                 <defs>
                   <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3} />
@@ -110,7 +154,9 @@ export default function DashboardPage() {
   );
 }
 
-function StatCard({ title, value, icon: Icon, className = "", valueClass = "" }: { title: string; value: string; icon: any; className?: string; valueClass?: string }) {
+function StatCard({ title, value, icon: Icon, className = "", valueClass = "" }: {
+  title: string; value: string; icon: any; className?: string; valueClass?: string;
+}) {
   return (
     <Card className={className}>
       <CardContent className="p-6 flex items-center justify-between">
