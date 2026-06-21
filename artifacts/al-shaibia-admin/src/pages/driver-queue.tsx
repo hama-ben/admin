@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { Check, X, Image as ImageIcon, Clock, MapPin } from "lucide-react";
+import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 
 interface PendingDriver extends User {
   details?: DriverDetails | null;
@@ -20,17 +21,8 @@ export default function DriverQueuePage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const { toast } = useToast();
 
-  useEffect(() => {
-    fetchPendingDrivers();
-    const channel = supabase
-      .channel("driver-queue-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, fetchPendingDrivers)
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, []);
-
-  async function fetchPendingDrivers() {
-    setLoading(true);
+  async function fetchPendingDrivers(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const { data: pending, error } = await supabase
         .from("users")
@@ -57,17 +49,28 @@ export default function DriverQueuePage() {
         driverStatus: statusMap.get(d.id) ?? null,
       })));
     } catch (err: any) {
-      toast({ title: "Error fetching queue", description: err.message, variant: "destructive" });
+      if (!isBackground) {
+        toast({ title: "Error fetching queue", description: err.message, variant: "destructive" });
+      }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
+
+  useEffect(() => {
+    fetchPendingDrivers(false);
+    const channel = supabase
+      .channel("driver-queue-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () => fetchPendingDrivers(true))
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  useAutoRefresh(() => fetchPendingDrivers(true));
 
   async function handleApprove(driverId: string, driverName: string, firstApprovalGranted: boolean | null | undefined) {
     setActionLoading(driverId);
     try {
-      // First approval (first_approval_granted = false/null): 30 gift days + 2 bonus = 32 days
-      // Re-approval (first_approval_granted = true): 30 days renewal
       const daysToAdd = firstApprovalGranted ? 30 : 32;
       const newExpiry = new Date();
       newExpiry.setDate(newExpiry.getDate() + daysToAdd);

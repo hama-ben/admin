@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase, USER_TYPE_DRIVER, USER_TYPE_CONSUMER } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDZD } from "@/lib/constants";
@@ -7,6 +7,7 @@ import {
 } from "recharts";
 import { Users, Truck, Package, CreditCard, Activity, Clock } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 
 interface Stats {
   totalDrivers: number;
@@ -23,68 +24,76 @@ async function safeCount(query: any): Promise<number> {
   return count ?? 0;
 }
 
+async function loadDashboardData(): Promise<{ stats: Stats; chartData: { date: string; count: number }[] }> {
+  const [
+    totalDrivers,
+    pendingVerifications,
+    activeDrivers,
+    totalConsumers,
+    ordersCompleted,
+  ] = await Promise.all([
+    safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", USER_TYPE_DRIVER)),
+    safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", USER_TYPE_DRIVER).eq("account_status", "pending")),
+    safeCount(supabase.from("driver_status").select("*", { count: "exact", head: true }).eq("current_status", "online")),
+    safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", USER_TYPE_CONSUMER)),
+    safeCount(supabase.from("orders").select("*", { count: "exact", head: true }).eq("status", "تم التوصيل")),
+  ]);
+
+  const { data: completedOrders } = await supabase
+    .from("orders")
+    .select("total_price")
+    .eq("status", "تم التوصيل");
+  const totalRevenue = (completedOrders ?? []).reduce((s, o) => s + Number(o.total_price), 0);
+
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: recentOrders } = await supabase
+    .from("orders")
+    .select("created_at")
+    .gte("created_at", since);
+
+  const daily: Record<string, number> = {};
+  (recentOrders ?? []).forEach((o) => {
+    const d = o.created_at.slice(0, 10);
+    daily[d] = (daily[d] || 0) + 1;
+  });
+  const chartData = Object.entries(daily)
+    .map(([date, count]) => ({ date, count }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  return { stats: { totalDrivers, activeDrivers, pendingVerifications, totalConsumers, ordersCompleted, totalRevenue }, chartData };
+}
+
 export default function DashboardPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [chartData, setChartData] = useState<{ date: string; count: number }[]>([]);
+  const initializedRef = useRef(false);
+
+  async function fetchAll(isBackground = false) {
+    if (!isBackground) setLoading(true);
+    try {
+      const result = await loadDashboardData();
+      setStats(result.stats);
+      setChartData(result.chartData);
+    } catch (err: any) {
+      if (!isBackground) console.error("Dashboard fetch error:", err);
+    } finally {
+      if (!isBackground) setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    fetchAll();
+    fetchAll(false);
+    initializedRef.current = true;
     const channel = supabase
       .channel("dashboard-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, fetchAll)
-      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, fetchAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "orders" }, () => fetchAll(true))
+      .on("postgres_changes", { event: "*", schema: "public", table: "users" }, () => fetchAll(true))
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  async function fetchAll() {
-    setLoading(true);
-    try {
-      const [
-        totalDrivers,
-        pendingVerifications,
-        activeDrivers,
-        totalConsumers,
-        ordersCompleted,
-      ] = await Promise.all([
-        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", USER_TYPE_DRIVER)),
-        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", USER_TYPE_DRIVER).eq("account_status", "pending")),
-        safeCount(supabase.from("driver_status").select("*", { count: "exact", head: true }).eq("current_status", "online")),
-        safeCount(supabase.from("users").select("*", { count: "exact", head: true }).eq("user_type", USER_TYPE_CONSUMER)),
-        safeCount(supabase.from("orders").select("*", { count: "exact", head: true }).eq("status", "تم التوصيل")),
-      ]);
-
-      const { data: completedOrders } = await supabase
-        .from("orders")
-        .select("total_price")
-        .eq("status", "تم التوصيل");
-      const totalRevenue = (completedOrders ?? []).reduce((s, o) => s + Number(o.total_price), 0);
-
-      const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      const { data: recentOrders } = await supabase
-        .from("orders")
-        .select("created_at")
-        .gte("created_at", since);
-
-      const daily: Record<string, number> = {};
-      (recentOrders ?? []).forEach((o) => {
-        const d = o.created_at.slice(0, 10);
-        daily[d] = (daily[d] || 0) + 1;
-      });
-      setChartData(
-        Object.entries(daily)
-          .map(([date, count]) => ({ date, count }))
-          .sort((a, b) => a.date.localeCompare(b.date))
-      );
-
-      setStats({ totalDrivers, activeDrivers, pendingVerifications, totalConsumers, ordersCompleted, totalRevenue });
-    } catch (err: any) {
-      console.error("Dashboard fetch error:", err);
-    } finally {
-      setLoading(false);
-    }
-  }
+  useAutoRefresh(() => fetchAll(true));
 
   return (
     <div className="p-8 space-y-8 animate-in fade-in duration-500">

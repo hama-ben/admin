@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase, USER_TYPE_DRIVER, USER_TYPE_CONSUMER, type User } from "@/lib/supabase";
 import { ALGERIAN_WILAYAS } from "@/lib/constants";
 import { Input } from "@/components/ui/input";
@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, Search } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 
 const PAGE_SIZE = 20;
 
@@ -32,14 +33,20 @@ export default function UsersPage() {
   const [totalCount, setTotalCount] = useState(0);
   const { toast } = useToast();
 
+  const filtersRef = useRef({ typeTab, statusFilter, search, wilayaFilter, page });
+  filtersRef.current = { typeTab, statusFilter, search, wilayaFilter, page };
+
   useEffect(() => { setPage(0); }, [typeTab, statusFilter, search, wilayaFilter]);
   useEffect(() => {
-    const timer = setTimeout(fetchUsers, search ? 400 : 0);
+    const timer = setTimeout(() => fetchUsers(false), search ? 400 : 0);
     return () => clearTimeout(timer);
   }, [typeTab, statusFilter, search, wilayaFilter, page]);
 
-  async function fetchUsers() {
-    setLoading(true);
+  useAutoRefresh(() => fetchUsers(true));
+
+  async function fetchUsers(isBackground = false) {
+    const { typeTab, statusFilter, search, wilayaFilter, page } = filtersRef.current;
+    if (!isBackground) setLoading(true);
     try {
       let query = supabase
         .from("users")
@@ -60,9 +67,11 @@ export default function UsersPage() {
       setUsers((data as User[]) ?? []);
       setTotalCount(count ?? 0);
     } catch (err: any) {
-      toast({ title: "Error fetching users", description: err.message, variant: "destructive" });
+      if (!isBackground) {
+        toast({ title: "Error fetching users", description: err.message, variant: "destructive" });
+      }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 

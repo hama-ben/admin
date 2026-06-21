@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase, type Order, type User } from "@/lib/supabase";
 import { formatDZD, formatDate } from "@/lib/constants";
 import { Input } from "@/components/ui/input";
@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { ChevronLeft, ChevronRight, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 
 const ORDER_STATUSES = ["معلق", "قيد التوصيل", "وصل السائق", "تم التوصيل"];
 
@@ -35,11 +36,17 @@ export default function OrdersPage() {
   const { toast } = useToast();
   const PAGE_SIZE = 20;
 
-  useEffect(() => { setPage(0); }, [statusFilter, dateFrom, dateTo]);
-  useEffect(() => { fetchOrders(); }, [statusFilter, dateFrom, dateTo, page]);
+  const filtersRef = useRef({ statusFilter, dateFrom, dateTo, page });
+  filtersRef.current = { statusFilter, dateFrom, dateTo, page };
 
-  async function fetchOrders() {
-    setLoading(true);
+  useEffect(() => { setPage(0); }, [statusFilter, dateFrom, dateTo]);
+  useEffect(() => { fetchOrders(false); }, [statusFilter, dateFrom, dateTo, page]);
+
+  useAutoRefresh(() => fetchOrders(true));
+
+  async function fetchOrders(isBackground = false) {
+    const { statusFilter, dateFrom, dateTo, page } = filtersRef.current;
+    if (!isBackground) setLoading(true);
     try {
       let query = supabase.from("orders").select("*", { count: "exact" });
       if (statusFilter !== "all") query = query.eq("status", statusFilter);
@@ -56,7 +63,6 @@ export default function OrdersPage() {
 
       if (!rawOrders || rawOrders.length === 0) { setOrders([]); return; }
 
-      // Collect all user IDs (customers + drivers)
       const customerIds = [...new Set(rawOrders.map((o: Order) => o.user_id).filter(Boolean))];
       const driverIds = [...new Set(rawOrders.map((o: Order) => o.driver_id).filter(Boolean))] as string[];
       const allIds = [...new Set([...customerIds, ...driverIds])];
@@ -76,9 +82,11 @@ export default function OrdersPage() {
         driverUser: o.driver_id ? usersMap.get(o.driver_id) ?? null : null,
       })));
     } catch (err: any) {
-      toast({ title: "Error fetching orders", description: err.message, variant: "destructive" });
+      if (!isBackground) {
+        toast({ title: "Error fetching orders", description: err.message, variant: "destructive" });
+      }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 

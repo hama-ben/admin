@@ -14,6 +14,7 @@ import {
   BarChart, Bar, PieChart, Pie, Cell,
   ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip,
 } from "recharts";
+import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 
 type ChartType = "bar" | "pie";
 
@@ -33,9 +34,13 @@ export default function PaymentsPage() {
   const { toast } = useToast();
 
   useEffect(() => {
-    fetchPayments();
+    fetchPayments(false);
     fetchSummary();
   }, [statusTab]);
+
+  useAutoRefresh(async () => {
+    await Promise.all([fetchPayments(true), fetchSummary()]);
+  });
 
   async function enrichWithDrivers(payments: SubscriptionPayment[]): Promise<EnrichedPayment[]> {
     if (payments.length === 0) return [];
@@ -48,8 +53,8 @@ export default function PaymentsPage() {
     return payments.map((p) => ({ ...p, driverUser: usersMap.get(p.driver_id) ?? null }));
   }
 
-  async function fetchPayments() {
-    setLoading(true);
+  async function fetchPayments(isBackground = false) {
+    if (!isBackground) setLoading(true);
     try {
       const { data, error } = await supabase
         .from("subscription_payments")
@@ -59,9 +64,11 @@ export default function PaymentsPage() {
       if (error) throw error;
       setPayments(await enrichWithDrivers(data ?? []));
     } catch (err: any) {
-      toast({ title: "Error fetching payments", description: err.message, variant: "destructive" });
+      if (!isBackground) {
+        toast({ title: "Error fetching payments", description: err.message, variant: "destructive" });
+      }
     } finally {
-      setLoading(false);
+      if (!isBackground) setLoading(false);
     }
   }
 
