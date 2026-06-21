@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "wouter";
 import { supabase, USER_TYPE_DRIVER, type User, type DriverDetails, type DriverStatus } from "@/lib/supabase";
 import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -6,8 +7,9 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { Check, X, Image as ImageIcon, Clock, MapPin } from "lucide-react";
+import { Check, X, Image as ImageIcon, Clock, MapPin, UserX } from "lucide-react";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
+import { useDriverCounts } from "@/hooks/use-driver-counts";
 
 interface PendingDriver extends User {
   details?: DriverDetails | null;
@@ -17,6 +19,7 @@ interface PendingDriver extends User {
 export default function DriverQueuePage() {
   const [drivers, setDrivers] = useState<PendingDriver[]>([]);
   const [loading, setLoading] = useState(true);
+  const driverCounts = useDriverCounts();
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const { toast } = useToast();
@@ -170,11 +173,25 @@ export default function DriverQueuePage() {
 
   return (
     <div className="p-8 space-y-6 animate-in fade-in duration-500">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Driver Queue</h1>
-        <p className="text-muted-foreground mt-2">
-          Pending driver applications — {loading ? "…" : drivers.length} awaiting review.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Driver Queue</h1>
+          <p className="text-muted-foreground mt-2">
+            Pending driver applications — {loading ? "…" : drivers.length} awaiting review.
+          </p>
+        </div>
+        <Link
+          href="/rejected-drivers"
+          className="shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-md border border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/10 transition-colors text-sm font-medium"
+        >
+          <UserX className="w-4 h-4" />
+          عرض السائقون المرفوضون
+          {driverCounts.rejected > 0 && (
+            <span className="min-w-[20px] h-5 px-1.5 rounded-full bg-red-500 text-white text-xs font-bold flex items-center justify-center">
+              {driverCounts.rejected}
+            </span>
+          )}
+        </Link>
       </div>
 
       {loading ? (

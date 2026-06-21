@@ -8,21 +8,25 @@ import {
   Megaphone,
   AlertTriangle,
   UserX,
+  CalendarX,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingDisputeCount } from "@/hooks/use-pending-disputes";
+import { useDriverCounts } from "@/hooks/use-driver-counts";
 
 export function Sidebar() {
   const [location] = useLocation();
   const pendingDisputes = usePendingDisputeCount();
+  const driverCounts = useDriverCounts();
 
   const NAV_ITEMS = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard, badge: null },
     { href: "/users", label: "Users", icon: Users, badge: null },
     { href: "/orders", label: "Orders", icon: Package, badge: null },
-    { href: "/driver-queue", label: "Driver Queue", icon: Truck, badge: null },
+    { href: "/driver-queue", label: "Driver Queue", icon: Truck, badge: driverCounts.pending > 0 ? driverCounts.pending : null },
     { href: "/payments", label: "Payments — مدفوعات", icon: CreditCard, badge: null },
-    { href: "/rejected-drivers", label: "السائقون المرفوضون", icon: UserX, badge: null },
+    { href: "/rejected-drivers", label: "السائقون المرفوضون", icon: UserX, badge: driverCounts.rejected > 0 ? driverCounts.rejected : null },
+    { href: "/expired-accounts", label: "الحسابات المنتهية", icon: CalendarX, badge: driverCounts.expired > 0 ? driverCounts.expired : null },
     { href: "/announcements", label: "Announcements", icon: Megaphone, badge: null },
     { href: "/disputes", label: "Disputes", icon: AlertTriangle, badge: pendingDisputes > 0 ? pendingDisputes : null },
   ];
