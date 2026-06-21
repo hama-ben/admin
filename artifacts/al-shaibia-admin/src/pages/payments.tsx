@@ -109,21 +109,41 @@ export default function PaymentsPage() {
   async function handleApprove(payment: EnrichedPayment) {
     setActionLoading(payment.id);
     try {
-      const { error } = await supabase
+      const { error: paymentError } = await supabase
         .from("subscription_payments")
         .update({ status: "approved", reviewed_at: new Date().toISOString() })
         .eq("id", payment.id);
-      if (error) throw error;
+      if (paymentError) throw paymentError;
+
+      // Extend subscription: MAX(NOW(), current expiry) + 30 days
+      const { data: userData, error: userFetchError } = await supabase
+        .from("users")
+        .select("subscription_expires_at")
+        .eq("id", payment.driver_id)
+        .single();
+      if (userFetchError) throw userFetchError;
+
+      const now = new Date();
+      const currentExpiry = userData?.subscription_expires_at ? new Date(userData.subscription_expires_at) : now;
+      const base = currentExpiry > now ? currentExpiry : now;
+      const newExpiry = new Date(base);
+      newExpiry.setDate(newExpiry.getDate() + 30);
+
+      const { error: updateError } = await supabase
+        .from("users")
+        .update({ subscription_expires_at: newExpiry.toISOString() })
+        .eq("id", payment.driver_id);
+      if (updateError) throw updateError;
 
       await supabase.from("announcements").insert({
-        title: "تم قبول دفع وصلك",
-        content: "تم إضافة 30 يوم إلى حسابك",
+        title: "تم قبول دفع وصلك ✅",
+        content: "تم إضافة 30 يوماً إلى حسابك",
         target_audience: "Drivers",
         badge_text: "Success",
         is_active: true,
       });
 
-      toast({ title: "Payment Confirmed", description: "Subscription approved." });
+      toast({ title: "Payment Confirmed", description: `Subscription extended to ${newExpiry.toLocaleDateString("en-GB")}.` });
       setPayments((prev) => prev.filter((p) => p.id !== payment.id));
       fetchSummary();
     } catch (err: any) {

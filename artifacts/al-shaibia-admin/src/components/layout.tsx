@@ -7,6 +7,7 @@ import {
   CreditCard,
   Megaphone,
   AlertTriangle,
+  UserX,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingDisputeCount } from "@/hooks/use-pending-disputes";
@@ -21,6 +22,7 @@ export function Sidebar() {
     { href: "/orders", label: "Orders", icon: Package, badge: null },
     { href: "/driver-queue", label: "Driver Queue", icon: Truck, badge: null },
     { href: "/payments", label: "Payments — مدفوعات", icon: CreditCard, badge: null },
+    { href: "/rejected-drivers", label: "السائقون المرفوضون", icon: UserX, badge: null },
     { href: "/announcements", label: "Announcements", icon: Megaphone, badge: null },
     { href: "/disputes", label: "Disputes", icon: AlertTriangle, badge: pendingDisputes > 0 ? pendingDisputes : null },
   ];

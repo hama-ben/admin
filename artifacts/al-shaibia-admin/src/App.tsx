@@ -11,6 +11,7 @@ import DriverQueuePage from "@/pages/driver-queue";
 import PaymentsPage from "@/pages/payments";
 import AnnouncementsPage from "@/pages/announcements";
 import DisputesPage from "@/pages/disputes";
+import RejectedDriversPage from "@/pages/rejected-drivers";
 
 const queryClient = new QueryClient();
 
@@ -25,6 +26,7 @@ function Router() {
         <Route path="/payments" component={PaymentsPage} />
         <Route path="/announcements" component={AnnouncementsPage} />
         <Route path="/disputes" component={DisputesPage} />
+        <Route path="/rejected-drivers" component={RejectedDriversPage} />
         <Route component={NotFound} />
       </Switch>
     </AppLayout>
