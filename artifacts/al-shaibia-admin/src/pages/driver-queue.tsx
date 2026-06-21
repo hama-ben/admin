@@ -34,9 +34,10 @@ export default function DriverQueuePage() {
     try {
       const { data: pending, error } = await supabase
         .from("users")
-        .select("id, name, phone, email, wilaya, commune, account_status, user_type, subscription_expires_at")
+        .select("id, name, phone, email, wilaya, commune, account_status, user_type, subscription_expires_at, first_approval_granted, created_at")
         .eq("user_type", USER_TYPE_DRIVER)
-        .eq("account_status", "pending");
+        .eq("account_status", "pending")
+        .order("created_at", { ascending: false });
 
       if (error) throw error;
       if (!pending || pending.length === 0) { setDrivers([]); return; }
@@ -62,13 +63,35 @@ export default function DriverQueuePage() {
     }
   }
 
-  async function handleApprove(driverId: string, driverName: string) {
+  async function handleApprove(driverId: string, driverName: string, firstApprovalGranted: boolean | null | undefined) {
     setActionLoading(driverId);
     try {
-      const { error } = await supabase
+      // First approval (first_approval_granted = false/null): 30 gift days + 2 bonus = 32 days
+      // Re-approval (first_approval_granted = true): 30 days renewal
+      const daysToAdd = firstApprovalGranted ? 30 : 32;
+      const newExpiry = new Date();
+      newExpiry.setDate(newExpiry.getDate() + daysToAdd);
+      const newExpiryISO = newExpiry.toISOString();
+
+      console.log(
+        "[Approve] driverId:", driverId,
+        "| firstApprovalGranted:", firstApprovalGranted,
+        "| daysToAdd:", daysToAdd,
+        "| newExpiry:", newExpiryISO,
+      );
+
+      const { data: updateResult, error } = await supabase
         .from("users")
-        .update({ account_status: "approved" })
-        .eq("id", driverId);
+        .update({
+          account_status: "approved",
+          subscription_expires_at: newExpiryISO,
+          first_approval_granted: true,
+        })
+        .eq("id", driverId)
+        .select("id, account_status, subscription_expires_at, first_approval_granted");
+
+      console.log("[Approve] update result:", JSON.stringify(updateResult), "| error:", error?.message ?? null);
+
       if (error) throw error;
 
       await supabase.from("announcements").insert({
@@ -79,9 +102,10 @@ export default function DriverQueuePage() {
         is_active: true,
       });
 
-      toast({ title: "Driver Approved", description: `${driverName} has been approved.` });
+      toast({ title: "Driver Approved ✓", description: `${driverName} — subscription set to ${daysToAdd} days (expires ${newExpiry.toLocaleDateString("en-GB")}).` });
       setDrivers((prev) => prev.filter((d) => d.id !== driverId));
     } catch (err: any) {
+      console.error("[Approve] caught error:", err);
       toast({ title: "Action failed", description: err.message, variant: "destructive" });
     } finally {
       setActionLoading(null);
@@ -219,7 +243,7 @@ export default function DriverQueuePage() {
                 </Button>
                 <Button
                   className="w-full bg-green-600 hover:bg-green-700 text-white gap-1.5"
-                  onClick={() => handleApprove(driver.id, driver.name)}
+                  onClick={() => handleApprove(driver.id, driver.name, driver.first_approval_granted)}
                   disabled={actionLoading === driver.id}
                 >
                   <Check className="w-4 h-4" /> قبول

@@ -15,7 +15,9 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey);
  * users table — single table for ALL account types.
  * user_type: 'سائق' = driver, 'مستهلك' = consumer
  * account_status: 'pending' | 'approved' | 'rejected'
- * NOTE: No created_at column on this table.
+ * Columns: id, name, email, phone, password_hash, user_type, wilaya, commune,
+ *          account_status, subscription_expires_at, free_trial_claimed,
+ *          created_at, first_approval_granted
  */
 export interface User {
   id: string;
@@ -28,6 +30,8 @@ export interface User {
   account_status?: string | null;
   subscription_expires_at?: string | null;
   free_trial_claimed?: boolean | null;
+  first_approval_granted?: boolean | null;
+  created_at?: string | null;
 }
 
 /**
