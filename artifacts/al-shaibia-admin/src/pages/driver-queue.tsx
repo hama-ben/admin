@@ -75,14 +75,29 @@ export default function DriverQueuePage() {
     setActionLoading(driverId);
     try {
       const daysToAdd = firstApprovalGranted ? 30 : 32;
-      const newExpiry = new Date();
+
+      // Read current subscription so we never reduce an active one
+      const { data: current } = await supabase
+        .from("users")
+        .select("subscription_expires_at")
+        .eq("id", driverId)
+        .single();
+
+      const now = new Date();
+      const currentExpiry = current?.subscription_expires_at
+        ? new Date(current.subscription_expires_at)
+        : now;
+      const base = currentExpiry > now ? currentExpiry : now;
+      const newExpiry = new Date(base);
       newExpiry.setDate(newExpiry.getDate() + daysToAdd);
       const newExpiryISO = newExpiry.toISOString();
 
       console.log(
-        "[Approve] driverId:", driverId,
+        "[Queue Approve] driverId:", driverId,
         "| firstApprovalGranted:", firstApprovalGranted,
         "| daysToAdd:", daysToAdd,
+        "| current_expiry:", current?.subscription_expires_at ?? "null",
+        "| base:", base.toISOString(),
         "| newExpiry:", newExpiryISO,
       );
 
@@ -96,7 +111,7 @@ export default function DriverQueuePage() {
         .eq("id", driverId)
         .select("id, account_status, subscription_expires_at, first_approval_granted");
 
-      console.log("[Approve] update result:", JSON.stringify(updateResult), "| error:", error?.message ?? null);
+      console.log("[Queue Approve] update result:", JSON.stringify(updateResult), "| error:", error?.message ?? null);
 
       if (error) throw error;
 

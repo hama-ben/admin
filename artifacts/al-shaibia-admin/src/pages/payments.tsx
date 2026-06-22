@@ -109,13 +109,15 @@ export default function PaymentsPage() {
   async function handleApprove(payment: EnrichedPayment) {
     setActionLoading(payment.id);
     try {
+      // Step A — mark payment approved
       const { error: paymentError } = await supabase
         .from("subscription_payments")
         .update({ status: "approved", reviewed_at: new Date().toISOString() })
         .eq("id", payment.id);
       if (paymentError) throw paymentError;
+      console.log("[Payment Approve] payment status updated for:", payment.id);
 
-      // Extend subscription: MAX(NOW(), current expiry) + 30 days
+      // Step B — read current subscription
       const { data: userData, error: userFetchError } = await supabase
         .from("users")
         .select("subscription_expires_at")
@@ -124,16 +126,39 @@ export default function PaymentsPage() {
       if (userFetchError) throw userFetchError;
 
       const now = new Date();
-      const currentExpiry = userData?.subscription_expires_at ? new Date(userData.subscription_expires_at) : now;
+      const currentExpiry = userData?.subscription_expires_at
+        ? new Date(userData.subscription_expires_at)
+        : now;
       const base = currentExpiry > now ? currentExpiry : now;
       const newExpiry = new Date(base);
       newExpiry.setDate(newExpiry.getDate() + 30);
 
-      const { error: updateError } = await supabase
+      console.log(
+        "[Payment Approve] driver_id:", payment.driver_id,
+        "| current_expiry:", userData?.subscription_expires_at ?? "null",
+        "| base:", base.toISOString(),
+        "| new_expiry:", newExpiry.toISOString(),
+      );
+
+      // Step C — extend subscription (MAX(NOW, current) + 30 days)
+      const { data: updateData, error: updateError } = await supabase
         .from("users")
         .update({ subscription_expires_at: newExpiry.toISOString() })
-        .eq("id", payment.driver_id);
+        .eq("id", payment.driver_id)
+        .select("id, subscription_expires_at");
+
+      console.log(
+        "[Payment Approve] UPDATE result — rows affected:", updateData?.length ?? 0,
+        "| new value:", updateData?.[0]?.subscription_expires_at ?? "NONE",
+        "| error:", updateError?.message ?? null,
+      );
+
       if (updateError) throw updateError;
+      if (!updateData || updateData.length === 0) {
+        throw new Error(
+          `users table UPDATE matched 0 rows for driver_id=${payment.driver_id}. Check Supabase RLS policies on the users table.`,
+        );
+      }
 
       await supabase.from("announcements").insert({
         title: "تم قبول دفع وصلك ✅",
@@ -143,10 +168,14 @@ export default function PaymentsPage() {
         is_active: true,
       });
 
-      toast({ title: "Payment Confirmed", description: `Subscription extended to ${newExpiry.toLocaleDateString("en-GB")}.` });
+      toast({
+        title: "Payment Confirmed ✓",
+        description: `Subscription extended to ${new Date(updateData[0].subscription_expires_at).toLocaleDateString("en-GB")}.`,
+      });
       setPayments((prev) => prev.filter((p) => p.id !== payment.id));
       fetchSummary();
     } catch (err: any) {
+      console.error("[Payment Approve] FAILED:", err.message);
       toast({ title: "Action failed", description: err.message, variant: "destructive" });
     } finally {
       setActionLoading(null);
