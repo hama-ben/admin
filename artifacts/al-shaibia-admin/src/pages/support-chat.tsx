@@ -9,7 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Search, Send } from "lucide-react";
+import { MessageSquare, Search, Send, CheckCircle, RotateCcw } from "lucide-react";
 
 interface SupportMessage {
   id: string;
@@ -34,9 +34,10 @@ interface Conversation {
   messages: SupportMessage[];
   lastMessage: SupportMessage;
   isUnread: boolean;
+  isResolved: boolean;
 }
 
-type FilterType = "all" | "unread" | "سائق" | "مستهلك";
+type FilterType = "all" | "unread" | "resolved" | "سائق" | "مستهلك";
 
 function formatRelativeTime(dateStr: string): string {
   const date = new Date(dateStr);
@@ -60,6 +61,7 @@ export default function SupportChatPage() {
   const [filter, setFilter] = useState<FilterType>("all");
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
+  const [resolving, setResolving] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelName = useRef(`support-chat-${Math.random().toString(36).slice(2)}`);
   const { toast } = useToast();
@@ -76,12 +78,20 @@ export default function SupportChatPage() {
           setMessages((prev) => [...prev, newMsg]);
           if (newMsg.user_id) {
             setUsers((prev) => {
-              if (!prev.has(newMsg.user_id!)) {
-                fetchUser(newMsg.user_id!);
-              }
+              if (!prev.has(newMsg.user_id!)) fetchUser(newMsg.user_id!);
               return prev;
             });
           }
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "support_messages" },
+        (payload) => {
+          const updated = payload.new as SupportMessage;
+          setMessages((prev) =>
+            prev.map((m) => (m.id === updated.id ? { ...m, status: updated.status } : m)),
+          );
         },
       )
       .subscribe();
@@ -141,12 +151,14 @@ export default function SupportChatPage() {
         );
         const last = sorted[sorted.length - 1];
         const userId = key === "__anon__" ? null : key;
+        const isResolved = last.status === "resolved";
         return {
           userId,
           user: userId ? (users.get(userId) ?? null) : null,
           messages: sorted,
           lastMessage: last,
-          isUnread: last.sender_type === "user" || last.sender_type == null,
+          isUnread: !isResolved && (last.sender_type === "user" || last.sender_type == null),
+          isResolved,
         };
       })
       .sort(
@@ -159,6 +171,7 @@ export default function SupportChatPage() {
   const filtered = useMemo(() => {
     return conversations.filter((conv) => {
       if (filter === "unread" && !conv.isUnread) return false;
+      if (filter === "resolved" && !conv.isResolved) return false;
       if (filter === "سائق" && conv.user?.user_type !== "سائق") return false;
       if (filter === "مستهلك" && conv.user?.user_type !== "مستهلك") return false;
       if (search) {
@@ -197,9 +210,38 @@ export default function SupportChatPage() {
     }
   }
 
+  async function markResolved(userId: string, resolved: boolean) {
+    setResolving(true);
+    // Optimistic update — flip status on all messages in this conversation
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.user_id === userId ? { ...m, status: resolved ? "resolved" : "open" } : m,
+      ),
+    );
+    try {
+      const { error } = await supabase
+        .from("support_messages")
+        .update({ status: resolved ? "resolved" : "open" })
+        .eq("user_id", userId);
+      if (error) throw error;
+      toast({
+        title: resolved ? "تم تحديد المحادثة كمحلولة" : "تمت إعادة فتح المحادثة",
+        description: resolved
+          ? "ستُعاد فتح المحادثة تلقائيًا عند وصول رسالة جديدة"
+          : "يمكنك الآن الرد على المحادثة",
+      });
+    } catch (err: any) {
+      toast({ title: "فشل التحديث", description: err.message, variant: "destructive" });
+      fetchAll();
+    } finally {
+      setResolving(false);
+    }
+  }
+
   const FILTERS: { value: FilterType; label: string }[] = [
     { value: "all", label: "الكل" },
     { value: "unread", label: "غير مقروء" },
+    { value: "resolved", label: "محلول" },
     { value: "سائق", label: "سائق" },
     { value: "مستهلك", label: "مستهلك" },
   ];
@@ -228,15 +270,17 @@ export default function SupportChatPage() {
             />
           </div>
 
-          <div className="flex gap-1">
+          <div className="flex gap-1 flex-wrap">
             {FILTERS.map((f) => (
               <button
                 key={f.value}
                 onClick={() => setFilter(f.value)}
                 className={cn(
-                  "flex-1 text-[11px] py-1 rounded-md transition-colors font-medium",
+                  "text-[11px] px-2 py-1 rounded-md transition-colors font-medium",
                   filter === f.value
-                    ? "bg-primary/20 text-primary"
+                    ? f.value === "resolved"
+                      ? "bg-green-500/20 text-green-400"
+                      : "bg-primary/20 text-primary"
                     : "text-muted-foreground hover:bg-muted",
                 )}
               >
@@ -270,17 +314,21 @@ export default function SupportChatPage() {
                       "w-full text-right px-3 py-2.5 rounded-lg transition-colors text-sm",
                       isSelected
                         ? "bg-primary/10 border border-primary/20"
-                        : conv.isUnread
-                          ? "hover:bg-muted bg-amber-500/5"
-                          : "hover:bg-muted",
+                        : conv.isResolved
+                          ? "hover:bg-muted opacity-60"
+                          : conv.isUnread
+                            ? "hover:bg-muted bg-amber-500/5"
+                            : "hover:bg-muted",
                     )}
                   >
                     <div className="flex items-start gap-2">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-1.5">
-                          {conv.isUnread && !isSelected && (
+                          {conv.isResolved ? (
+                            <CheckCircle className="w-3 h-3 text-green-400 shrink-0" />
+                          ) : conv.isUnread && !isSelected ? (
                             <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
-                          )}
+                          ) : null}
                           <span className="font-semibold truncate text-sm">
                             {conv.user?.name ?? "مجهول"}
                           </span>
@@ -298,6 +346,14 @@ export default function SupportChatPage() {
                               )}
                             >
                               {conv.user.user_type}
+                            </Badge>
+                          )}
+                          {conv.isResolved && (
+                            <Badge
+                              variant="outline"
+                              className="text-[10px] h-4 px-1 py-0 border leading-none text-emerald-400 border-emerald-400/30 bg-emerald-400/5"
+                            >
+                              محلول
                             </Badge>
                           )}
                           {conv.user?.phone && (
@@ -334,7 +390,18 @@ export default function SupportChatPage() {
             {/* Header */}
             <div className="px-6 py-4 border-b border-border flex items-center justify-between shrink-0">
               <div>
-                <h2 className="font-semibold text-base">{selectedConv.user?.name ?? "مجهول"}</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="font-semibold text-base">{selectedConv.user?.name ?? "مجهول"}</h2>
+                  {selectedConv.isResolved && (
+                    <Badge
+                      variant="outline"
+                      className="text-xs border text-emerald-400 border-emerald-400/30 bg-emerald-400/10 gap-1"
+                    >
+                      <CheckCircle className="w-3 h-3" />
+                      محلول
+                    </Badge>
+                  )}
+                </div>
                 <div className="flex items-center gap-2 mt-0.5">
                   {selectedConv.user?.user_type && (
                     <Badge
@@ -356,10 +423,46 @@ export default function SupportChatPage() {
                   )}
                 </div>
               </div>
-              <span className="text-xs text-muted-foreground">
-                {selectedConv.messages.length} رسالة
-              </span>
+
+              <div className="flex items-center gap-3">
+                <span className="text-xs text-muted-foreground">
+                  {selectedConv.messages.length} رسالة
+                </span>
+                {selectedConv.isResolved ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 h-8 text-xs text-muted-foreground"
+                    onClick={() => markResolved(selectedConv.userId!, false)}
+                    disabled={resolving || !selectedConv.userId}
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    إعادة فتح
+                  </Button>
+                ) : (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 h-8 text-xs text-emerald-400 border-emerald-400/30 hover:bg-emerald-400/10 hover:text-emerald-300"
+                    onClick={() => markResolved(selectedConv.userId!, true)}
+                    disabled={resolving || !selectedConv.userId}
+                  >
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    تحديد كمحلول
+                  </Button>
+                )}
+              </div>
             </div>
+
+            {/* Resolved notice banner */}
+            {selectedConv.isResolved && (
+              <div className="mx-6 mt-4 px-4 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center gap-2.5 shrink-0">
+                <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                <p className="text-sm text-emerald-400">
+                  هذه المحادثة محلولة — ستُعاد فتحها تلقائيًا عند وصول رسالة جديدة من المستخدم.
+                </p>
+              </div>
+            )}
 
             {/* Messages area */}
             <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
@@ -384,7 +487,9 @@ export default function SupportChatPage() {
                       <p
                         className={cn(
                           "text-[10px] mt-1.5",
-                          isAdmin ? "text-primary-foreground/60 text-right" : "text-muted-foreground",
+                          isAdmin
+                            ? "text-primary-foreground/60 text-right"
+                            : "text-muted-foreground",
                         )}
                       >
                         {formatDate(msg.created_at)}
@@ -398,6 +503,11 @@ export default function SupportChatPage() {
 
             {/* Reply input */}
             <div className="px-6 py-4 border-t border-border shrink-0">
+              {selectedConv.isResolved && (
+                <p className="text-xs text-muted-foreground mb-2">
+                  الرد على هذه المحادثة سيعيد فتحها تلقائيًا.
+                </p>
+              )}
               <div className="flex items-end gap-2">
                 <Textarea
                   placeholder="اكتب ردك هنا..."
