@@ -8,8 +8,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel,
+  AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
-import { CreditCard, Check, X, TrendingUp, Image as ImageIcon } from "lucide-react";
+import { CreditCard, Check, X, TrendingUp, Image as ImageIcon, AlertTriangle } from "lucide-react";
 import {
   BarChart, Bar, PieChart, Pie, Cell,
   ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -19,7 +24,7 @@ import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 type ChartType = "bar" | "pie";
 
 interface EnrichedPayment extends SubscriptionPayment {
-  driverUser?: Pick<User, "id" | "name" | "phone" | "wilaya"> | null;
+  driverUser?: Pick<User, "id" | "name" | "phone" | "wilaya"> & { account_status: string } | null;
 }
 
 export default function PaymentsPage() {
@@ -31,6 +36,7 @@ export default function PaymentsPage() {
   const [chartType, setChartType] = useState<ChartType>("bar");
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [pendingApprovalPayment, setPendingApprovalPayment] = useState<EnrichedPayment | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -47,7 +53,7 @@ export default function PaymentsPage() {
     const driverIds = [...new Set(payments.map((p) => p.driver_id).filter(Boolean))];
     const { data: usersData } = await supabase
       .from("users")
-      .select("id, name, phone, wilaya")
+      .select("id, name, phone, wilaya, account_status")
       .in("id", driverIds);
     const usersMap = new Map((usersData ?? []).map((u: any) => [u.id, u]));
     return payments.map((p) => ({ ...p, driverUser: usersMap.get(p.driver_id) ?? null }));
@@ -106,7 +112,16 @@ export default function PaymentsPage() {
     }
   }
 
+  function requestApprove(payment: EnrichedPayment) {
+    if (payment.driverUser?.account_status === "pending") {
+      setPendingApprovalPayment(payment);
+    } else {
+      handleApprove(payment);
+    }
+  }
+
   async function handleApprove(payment: EnrichedPayment) {
+    setPendingApprovalPayment(null);
     setActionLoading(payment.id);
     try {
       // Step A — mark payment approved
@@ -313,6 +328,15 @@ export default function PaymentsPage() {
                   <Badge variant="outline" className={STATUS_STYLES[payment.status]}>{payment.status}</Badge>
                 </div>
 
+                {payment.status === "pending" && payment.driverUser?.account_status === "pending" && (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      حساب السائق <strong>لم يُوافق عليه بعد</strong> في قائمة الانتظار. تأكد من الموافقة عليه لاحقاً.
+                    </span>
+                  </div>
+                )}
+
                 {payment.receipt_image ? (
                   <div
                     className="relative w-full h-36 rounded-md overflow-hidden border border-border cursor-pointer group"
@@ -344,7 +368,7 @@ export default function PaymentsPage() {
                     </Button>
                     <Button
                       className="bg-green-600 hover:bg-green-700 text-white gap-1"
-                      onClick={() => handleApprove(payment)}
+                      onClick={() => requestApprove(payment)}
                       disabled={actionLoading === payment.id}
                     >
                       <Check className="w-4 h-4" /> تأكيد
@@ -362,6 +386,37 @@ export default function PaymentsPage() {
           {selectedImage && <img src={selectedImage} alt="Receipt Preview" className="w-full h-auto max-h-[85vh] object-contain rounded-md" />}
         </DialogContent>
       </Dialog>
+
+      <AlertDialog
+        open={!!pendingApprovalPayment}
+        onOpenChange={(open) => { if (!open) setPendingApprovalPayment(null); }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-amber-400" />
+              السائق لم يُوافق عليه بعد
+            </AlertDialogTitle>
+            <AlertDialogDescription className="text-sm leading-relaxed pt-1">
+              <strong className="text-foreground">{pendingApprovalPayment?.driverUser?.name}</strong> لا يزال في قائمة الانتظار
+              ولم يتم قبوله من صفحة <strong className="text-foreground">Driver Queue</strong> بعد.
+              <br /><br />
+              إذا قبلت الدفع الآن، سيُمدَّد الاشتراك بـ 30 يوم — لكن حسابه سيبقى <strong className="text-amber-400">غير مفعّل</strong> حتى تقبله من قائمة الانتظار أيضاً.
+              <br /><br />
+              هل تريد المتابعة وقبول الدفع الآن؟
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>إلغاء</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-green-600 hover:bg-green-700 text-white"
+              onClick={() => pendingApprovalPayment && handleApprove(pendingApprovalPayment)}
+            >
+              نعم، قبول الدفع
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
