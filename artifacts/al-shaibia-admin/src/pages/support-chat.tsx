@@ -7,9 +7,21 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
+import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { MessageSquare, Search, Send, CheckCircle, RotateCcw } from "lucide-react";
+import {
+  MessageSquare,
+  Search,
+  Send,
+  CheckCircle,
+  RotateCcw,
+  Lock,
+  ChevronDown,
+  ChevronUp,
+  Plus,
+  StickyNote,
+} from "lucide-react";
 
 interface SupportMessage {
   id: string;
@@ -37,6 +49,13 @@ interface Conversation {
   isResolved: boolean;
 }
 
+interface ConversationNote {
+  id: string;
+  conversation_user_id: string;
+  note: string;
+  created_at: string;
+}
+
 type FilterType = "all" | "unread" | "resolved" | "سائق" | "مستهلك";
 
 function formatRelativeTime(dateStr: string): string {
@@ -53,6 +72,7 @@ function formatRelativeTime(dateStr: string): string {
 }
 
 export default function SupportChatPage() {
+  // ── Messages state ──────────────────────────────────────
   const [messages, setMessages] = useState<SupportMessage[]>([]);
   const [users, setUsers] = useState<Map<string, ConvUser>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -66,6 +86,14 @@ export default function SupportChatPage() {
   const channelName = useRef(`support-chat-${Math.random().toString(36).slice(2)}`);
   const { toast } = useToast();
 
+  // ── Notes state ─────────────────────────────────────────
+  const [notes, setNotes] = useState<ConversationNote[]>([]);
+  const [notesLoading, setNotesLoading] = useState(false);
+  const [noteText, setNoteText] = useState("");
+  const [addingNote, setAddingNote] = useState(false);
+  const [notesOpen, setNotesOpen] = useState(true);
+
+  // ── Real-time subscription ───────────────────────────────
   useEffect(() => {
     fetchAll();
     const channel = supabase
@@ -98,10 +126,22 @@ export default function SupportChatPage() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  // Auto-scroll on new message or conversation switch
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, selectedUserId]);
 
+  // Fetch notes when conversation changes
+  useEffect(() => {
+    if (selectedUserId) {
+      fetchNotes(selectedUserId);
+    } else {
+      setNotes([]);
+    }
+    setNoteText("");
+  }, [selectedUserId]);
+
+  // ── Data fetching ────────────────────────────────────────
   async function fetchAll() {
     setLoading(true);
     try {
@@ -137,6 +177,25 @@ export default function SupportChatPage() {
     if (data) setUsers((prev) => new Map(prev).set(data.id, data));
   }
 
+  async function fetchNotes(userId: string) {
+    setNotesLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from("support_conversation_notes")
+        .select("*")
+        .eq("conversation_user_id", userId)
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+      setNotes(data ?? []);
+    } catch {
+      // Notes table may not exist yet — fail silently, show empty state
+      setNotes([]);
+    } finally {
+      setNotesLoading(false);
+    }
+  }
+
+  // ── Derived state ────────────────────────────────────────
   const conversations = useMemo((): Conversation[] => {
     const groups = new Map<string, SupportMessage[]>();
     for (const msg of messages) {
@@ -191,6 +250,7 @@ export default function SupportChatPage() {
 
   const unreadCount = conversations.filter((c) => c.isUnread).length;
 
+  // ── Actions ──────────────────────────────────────────────
   async function sendReply() {
     if (!replyText.trim() || !selectedUserId) return;
     setSending(true);
@@ -212,7 +272,6 @@ export default function SupportChatPage() {
 
   async function markResolved(userId: string, resolved: boolean) {
     setResolving(true);
-    // Optimistic update — flip status on all messages in this conversation
     setMessages((prev) =>
       prev.map((m) =>
         m.user_id === userId ? { ...m, status: resolved ? "resolved" : "open" } : m,
@@ -227,7 +286,7 @@ export default function SupportChatPage() {
       toast({
         title: resolved ? "تم تحديد المحادثة كمحلولة" : "تمت إعادة فتح المحادثة",
         description: resolved
-          ? "ستُعاد فتح المحادثة تلقائيًا عند وصول رسالة جديدة"
+          ? "ستُعاد فتحها تلقائيًا عند وصول رسالة جديدة"
           : "يمكنك الآن الرد على المحادثة",
       });
     } catch (err: any) {
@@ -238,6 +297,37 @@ export default function SupportChatPage() {
     }
   }
 
+  async function addNote() {
+    if (!noteText.trim() || !selectedUserId) return;
+    setAddingNote(true);
+    const optimistic: ConversationNote = {
+      id: `temp-${Date.now()}`,
+      conversation_user_id: selectedUserId,
+      note: noteText.trim(),
+      created_at: new Date().toISOString(),
+    };
+    setNotes((prev) => [...prev, optimistic]);
+    setNoteText("");
+    try {
+      const { data, error } = await supabase
+        .from("support_conversation_notes")
+        .insert({ conversation_user_id: selectedUserId, note: optimistic.note })
+        .select()
+        .single();
+      if (error) throw error;
+      // Replace temp entry with the real one
+      setNotes((prev) => prev.map((n) => (n.id === optimistic.id ? (data as ConversationNote) : n)));
+    } catch (err: any) {
+      // Roll back optimistic update
+      setNotes((prev) => prev.filter((n) => n.id !== optimistic.id));
+      setNoteText(optimistic.note);
+      toast({ title: "فشل حفظ الملاحظة", description: err.message, variant: "destructive" });
+    } finally {
+      setAddingNote(false);
+    }
+  }
+
+  // ── Constants ────────────────────────────────────────────
   const FILTERS: { value: FilterType; label: string }[] = [
     { value: "all", label: "الكل" },
     { value: "unread", label: "غير مقروء" },
@@ -246,9 +336,11 @@ export default function SupportChatPage() {
     { value: "مستهلك", label: "مستهلك" },
   ];
 
+  // ── Render ───────────────────────────────────────────────
   return (
     <div className="flex flex-1 min-h-0 overflow-hidden">
-      {/* ── Left panel: conversation list ────────────────────── */}
+
+      {/* ════ Left panel: conversation list ════════════════ */}
       <div className="w-[300px] shrink-0 border-r border-border flex flex-col bg-card/50">
         <div className="p-4 border-b border-border space-y-3">
           <div className="flex items-center justify-between">
@@ -383,7 +475,7 @@ export default function SupportChatPage() {
         </ScrollArea>
       </div>
 
-      {/* ── Right panel: conversation view ──────────────────── */}
+      {/* ════ Right panel: conversation view ════════════════ */}
       <div className="flex-1 flex flex-col min-w-0">
         {selectedConv ? (
           <>
@@ -454,12 +546,12 @@ export default function SupportChatPage() {
               </div>
             </div>
 
-            {/* Resolved notice banner */}
+            {/* Resolved notice */}
             {selectedConv.isResolved && (
               <div className="mx-6 mt-4 px-4 py-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center gap-2.5 shrink-0">
                 <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
                 <p className="text-sm text-emerald-400">
-                  هذه المحادثة محلولة — ستُعاد فتحها تلقائيًا عند وصول رسالة جديدة من المستخدم.
+                  هذه المحادثة محلولة — ستُعاد فتحها تلقائيًا عند وصول رسالة جديدة.
                 </p>
               </div>
             )}
@@ -501,7 +593,104 @@ export default function SupportChatPage() {
               <div ref={messagesEndRef} />
             </div>
 
-            {/* Reply input */}
+            {/* ── Internal notes section ─────────────────────── */}
+            <div className="shrink-0 border-t border-amber-500/20 bg-amber-500/[0.04]">
+              {/* Notes header — always visible */}
+              <button
+                className="w-full flex items-center gap-2 px-6 py-3 hover:bg-amber-500/5 transition-colors"
+                onClick={() => setNotesOpen((o) => !o)}
+              >
+                <Lock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                <span className="text-xs font-semibold text-amber-400">ملاحظات داخلية</span>
+                <span className="text-[10px] text-amber-400/60 border border-amber-400/20 rounded px-1 py-0.5 leading-none ml-1">
+                  غير مرئية للمستخدم
+                </span>
+                {notes.length > 0 && (
+                  <span className="text-[10px] text-amber-400/70 ml-1">
+                    {notes.length}
+                  </span>
+                )}
+                <div className="ml-auto text-amber-400/60">
+                  {notesOpen
+                    ? <ChevronUp className="w-3.5 h-3.5" />
+                    : <ChevronDown className="w-3.5 h-3.5" />
+                  }
+                </div>
+              </button>
+
+              {/* Notes body — collapsible */}
+              {notesOpen && (
+                <div className="px-6 pb-3 space-y-3">
+                  {/* Existing notes */}
+                  {notesLoading ? (
+                    <div className="space-y-1.5">
+                      <Skeleton className="h-8 w-full rounded-md opacity-50" />
+                      <Skeleton className="h-8 w-3/4 rounded-md opacity-50" />
+                    </div>
+                  ) : !selectedConv.userId ? (
+                    <p className="text-xs text-amber-400/60 italic">
+                      لا تتوفر ملاحظات للمحادثات المجهولة.
+                    </p>
+                  ) : notes.length === 0 ? (
+                    <div className="flex items-center gap-2 text-amber-400/50">
+                      <StickyNote className="w-3.5 h-3.5 shrink-0" />
+                      <p className="text-xs italic">لا توجد ملاحظات بعد</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-[130px] overflow-y-auto pr-1">
+                      {notes.map((n) => (
+                        <div
+                          key={n.id}
+                          className="flex items-start gap-2 group"
+                        >
+                          <StickyNote className="w-3 h-3 text-amber-400/50 mt-0.5 shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs text-foreground/80 leading-snug whitespace-pre-wrap break-words">
+                              {n.note}
+                            </p>
+                            <p className="text-[10px] text-amber-400/40 mt-0.5">
+                              {formatDate(n.created_at)}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <Separator className="bg-amber-500/10" />
+
+                  {/* Add note input */}
+                  {selectedConv.userId ? (
+                    <div className="flex items-end gap-2">
+                      <Textarea
+                        placeholder="أضف ملاحظة داخلية..."
+                        className="resize-none text-xs min-h-[48px] max-h-[96px] bg-background/60 border-amber-500/20 placeholder:text-amber-400/30 focus-visible:ring-amber-400/30"
+                        dir="rtl"
+                        value={noteText}
+                        onChange={(e) => setNoteText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            addNote();
+                          }
+                        }}
+                      />
+                      <Button
+                        size="icon"
+                        variant="outline"
+                        className="h-8 w-8 shrink-0 mb-0.5 border-amber-500/30 text-amber-400 hover:bg-amber-500/10 hover:text-amber-300"
+                        onClick={addNote}
+                        disabled={!noteText.trim() || addingNote}
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            {/* ── Reply input ────────────────────────────────── */}
             <div className="px-6 py-4 border-t border-border shrink-0">
               {selectedConv.isResolved && (
                 <p className="text-xs text-muted-foreground mb-2">
