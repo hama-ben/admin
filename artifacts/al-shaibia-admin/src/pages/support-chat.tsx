@@ -21,7 +21,21 @@ import {
   ChevronUp,
   Plus,
   StickyNote,
+  Zap,
 } from "lucide-react";
+
+// ── Quick-reply templates ───────────────────────────────────────────────────
+const QUICK_REPLIES: { label: string; text: string }[] = [
+  { label: "ترحيب",       text: "مرحباً! كيف يمكنني مساعدتك اليوم؟" },
+  { label: "استلام",      text: "تم استلام رسالتك وسنرد في أقرب وقت ممكن، شكراً لصبرك." },
+  { label: "اعتذار",      text: "نعتذر عن الإزعاج، سنبذل قصارى جهدنا لحل المشكلة في أقرب وقت." },
+  { label: "تأكيد حل",   text: "تم حل مشكلتك بنجاح. هل تحتاج إلى أي مساعدة أخرى؟" },
+  { label: "متابعة",      text: "سنتابع موضوعك مع الفريق المختص وسنعود إليك قريباً." },
+  { label: "سائق قادم",  text: "السائق في طريقه إليك وسيصل خلال 30 دقيقة تقريباً." },
+  { label: "تأكيد طلب",  text: "تم تأكيد طلبك بنجاح وسيتم معالجته قريباً." },
+  { label: "طلب معلومات", text: "هل يمكنك تزويدنا بمزيد من التفاصيل حول مشكلتك حتى نتمكن من مساعدتك بشكل أفضل؟" },
+  { label: "خارج الدوام", text: "شكراً على تواصلك. مواعيد الدعم هي من 8 صباحاً حتى 8 مساءً. سنرد عليك أول شيء غداً." },
+];
 
 interface SupportMessage {
   id: string;
@@ -82,7 +96,9 @@ export default function SupportChatPage() {
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
   const [resolving, setResolving] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const channelName = useRef(`support-chat-${Math.random().toString(36).slice(2)}`);
   const { toast } = useToast();
 
@@ -691,14 +707,51 @@ export default function SupportChatPage() {
             </div>
 
             {/* ── Reply input ────────────────────────────────── */}
-            <div className="px-6 py-4 border-t border-border shrink-0">
+            <div className="px-6 py-4 border-t border-border shrink-0 space-y-2">
               {selectedConv.isResolved && (
-                <p className="text-xs text-muted-foreground mb-2">
+                <p className="text-xs text-muted-foreground">
                   الرد على هذه المحادثة سيعيد فتحها تلقائيًا.
                 </p>
               )}
+
+              {/* Quick-reply templates */}
+              <div>
+                <button
+                  onClick={() => setShowTemplates((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors mb-1.5"
+                >
+                  <Zap className="w-3 h-3 text-primary/70" />
+                  <span>ردود سريعة</span>
+                  {showTemplates
+                    ? <ChevronUp className="w-3 h-3" />
+                    : <ChevronDown className="w-3 h-3" />
+                  }
+                </button>
+
+                {showTemplates && (
+                  <div className="flex flex-wrap gap-1.5 max-h-[108px] overflow-y-auto pb-0.5 mb-2">
+                    {QUICK_REPLIES.map((t) => (
+                      <button
+                        key={t.label}
+                        onClick={() => {
+                          setReplyText(t.text);
+                          setShowTemplates(false);
+                          setTimeout(() => textareaRef.current?.focus(), 0);
+                        }}
+                        className="text-[11px] bg-muted hover:bg-primary/10 hover:text-primary border border-border hover:border-primary/30 rounded-md px-2 py-1 transition-colors text-muted-foreground text-right leading-snug"
+                        title={t.text}
+                      >
+                        <span className="font-medium text-foreground/70 ml-1">{t.label}:</span>
+                        <span className="line-clamp-1">{t.text}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-end gap-2">
                 <Textarea
+                  ref={textareaRef}
                   placeholder="اكتب ردك هنا..."
                   className="resize-none text-sm min-h-[60px] max-h-[140px]"
                   dir="rtl"
@@ -720,7 +773,7 @@ export default function SupportChatPage() {
                   <Send className="w-4 h-4" />
                 </Button>
               </div>
-              <p className="text-[10px] text-muted-foreground mt-1.5">
+              <p className="text-[10px] text-muted-foreground">
                 Enter للإرسال • Shift+Enter لسطر جديد
               </p>
             </div>
