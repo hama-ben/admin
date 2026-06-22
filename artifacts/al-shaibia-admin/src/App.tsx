@@ -13,6 +13,7 @@ import AnnouncementsPage from "@/pages/announcements";
 import DisputesPage from "@/pages/disputes";
 import RejectedDriversPage from "@/pages/rejected-drivers";
 import ExpiredAccountsPage from "@/pages/expired-accounts";
+import SupportChatPage from "@/pages/support-chat";
 
 const queryClient = new QueryClient();
 
@@ -27,6 +28,7 @@ function Router() {
         <Route path="/payments" component={PaymentsPage} />
         <Route path="/announcements" component={AnnouncementsPage} />
         <Route path="/disputes" component={DisputesPage} />
+        <Route path="/support" component={SupportChatPage} />
         <Route path="/rejected-drivers" component={RejectedDriversPage} />
         <Route path="/expired-accounts" component={ExpiredAccountsPage} />
         <Route component={NotFound} />

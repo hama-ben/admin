@@ -9,15 +9,18 @@ import {
   AlertTriangle,
   UserX,
   CalendarX,
+  MessageSquare,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { usePendingDisputeCount } from "@/hooks/use-pending-disputes";
 import { useDriverCounts } from "@/hooks/use-driver-counts";
+import { useSupportUnreadCount } from "@/hooks/use-support-unread";
 
 export function Sidebar() {
   const [location] = useLocation();
   const pendingDisputes = usePendingDisputeCount();
   const driverCounts = useDriverCounts();
+  const supportUnread = useSupportUnreadCount();
 
   const NAV_ITEMS = [
     { href: "/", label: "Dashboard", icon: LayoutDashboard, badge: null },
@@ -29,6 +32,7 @@ export function Sidebar() {
     { href: "/expired-accounts", label: "الحسابات المنتهية", icon: CalendarX, badge: driverCounts.expired > 0 ? driverCounts.expired : null },
     { href: "/announcements", label: "Announcements", icon: Megaphone, badge: null },
     { href: "/disputes", label: "Disputes", icon: AlertTriangle, badge: pendingDisputes > 0 ? pendingDisputes : null },
+    { href: "/support", label: "خدمة العملاء", icon: MessageSquare, badge: supportUnread > 0 ? supportUnread : null },
   ];
 
   return (
@@ -81,7 +85,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-background text-foreground font-sans flex">
       <Sidebar />
-      <main className="ml-[260px] flex-1 flex flex-col w-[calc(100%-260px)]">
+      <main className="ml-[260px] flex-1 flex flex-col min-h-0 w-[calc(100%-260px)]">
         {children}
       </main>
     </div>

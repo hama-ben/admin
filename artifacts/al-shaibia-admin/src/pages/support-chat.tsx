@@ -1,0 +1,443 @@
+import { useEffect, useState, useMemo, useRef } from "react";
+import { supabase } from "@/lib/supabase";
+import { formatDate } from "@/lib/constants";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
+import { MessageSquare, Search, Send } from "lucide-react";
+
+interface SupportMessage {
+  id: string;
+  user_id: string | null;
+  message: string;
+  status: string | null;
+  created_at: string;
+  sender_type: "user" | "admin" | null;
+  admin_id?: string | null;
+}
+
+interface ConvUser {
+  id: string;
+  name: string;
+  phone?: string | null;
+  user_type: string;
+}
+
+interface Conversation {
+  userId: string | null;
+  user: ConvUser | null;
+  messages: SupportMessage[];
+  lastMessage: SupportMessage;
+  isUnread: boolean;
+}
+
+type FilterType = "all" | "unread" | "سائق" | "مستهلك";
+
+function formatRelativeTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  const diffMs = Date.now() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+  if (diffMins < 1) return "الآن";
+  if (diffMins < 60) return `${diffMins}د`;
+  if (diffHours < 24) return `${diffHours}س`;
+  if (diffDays < 7) return `${diffDays}ي`;
+  return date.toLocaleDateString("ar-DZ", { day: "numeric", month: "short" });
+}
+
+export default function SupportChatPage() {
+  const [messages, setMessages] = useState<SupportMessage[]>([]);
+  const [users, setUsers] = useState<Map<string, ConvUser>>(new Map());
+  const [loading, setLoading] = useState(true);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<FilterType>("all");
+  const [replyText, setReplyText] = useState("");
+  const [sending, setSending] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const channelName = useRef(`support-chat-${Math.random().toString(36).slice(2)}`);
+  const { toast } = useToast();
+
+  useEffect(() => {
+    fetchAll();
+    const channel = supabase
+      .channel(channelName.current)
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "support_messages" },
+        (payload) => {
+          const newMsg = payload.new as SupportMessage;
+          setMessages((prev) => [...prev, newMsg]);
+          if (newMsg.user_id) {
+            setUsers((prev) => {
+              if (!prev.has(newMsg.user_id!)) {
+                fetchUser(newMsg.user_id!);
+              }
+              return prev;
+            });
+          }
+        },
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, selectedUserId]);
+
+  async function fetchAll() {
+    setLoading(true);
+    try {
+      const { data: msgs, error } = await supabase
+        .from("support_messages")
+        .select("*")
+        .order("created_at", { ascending: true });
+      if (error) throw error;
+
+      setMessages(msgs ?? []);
+
+      const ids = [...new Set((msgs ?? []).map((m) => m.user_id).filter(Boolean))] as string[];
+      if (ids.length > 0) {
+        const { data: usersData } = await supabase
+          .from("users")
+          .select("id, name, phone, user_type")
+          .in("id", ids);
+        setUsers(new Map((usersData ?? []).map((u: ConvUser) => [u.id, u])));
+      }
+    } catch (err: any) {
+      toast({ title: "خطأ في جلب الرسائل", description: err.message, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function fetchUser(userId: string) {
+    const { data } = await supabase
+      .from("users")
+      .select("id, name, phone, user_type")
+      .eq("id", userId)
+      .single();
+    if (data) setUsers((prev) => new Map(prev).set(data.id, data));
+  }
+
+  const conversations = useMemo((): Conversation[] => {
+    const groups = new Map<string, SupportMessage[]>();
+    for (const msg of messages) {
+      const key = msg.user_id ?? "__anon__";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(msg);
+    }
+    return Array.from(groups.entries())
+      .map(([key, msgs]) => {
+        const sorted = [...msgs].sort(
+          (a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+        );
+        const last = sorted[sorted.length - 1];
+        const userId = key === "__anon__" ? null : key;
+        return {
+          userId,
+          user: userId ? (users.get(userId) ?? null) : null,
+          messages: sorted,
+          lastMessage: last,
+          isUnread: last.sender_type === "user" || last.sender_type == null,
+        };
+      })
+      .sort(
+        (a, b) =>
+          new Date(b.lastMessage.created_at).getTime() -
+          new Date(a.lastMessage.created_at).getTime(),
+      );
+  }, [messages, users]);
+
+  const filtered = useMemo(() => {
+    return conversations.filter((conv) => {
+      if (filter === "unread" && !conv.isUnread) return false;
+      if (filter === "سائق" && conv.user?.user_type !== "سائق") return false;
+      if (filter === "مستهلك" && conv.user?.user_type !== "مستهلك") return false;
+      if (search) {
+        const q = search.toLowerCase();
+        const matchName = conv.user?.name?.toLowerCase().includes(q);
+        const matchPhone = conv.user?.phone?.includes(q);
+        if (!matchName && !matchPhone) return false;
+      }
+      return true;
+    });
+  }, [conversations, filter, search]);
+
+  const selectedConv = useMemo(
+    () => conversations.find((c) => c.userId === selectedUserId) ?? null,
+    [conversations, selectedUserId],
+  );
+
+  const unreadCount = conversations.filter((c) => c.isUnread).length;
+
+  async function sendReply() {
+    if (!replyText.trim() || !selectedUserId) return;
+    setSending(true);
+    try {
+      const { error } = await supabase.from("support_messages").insert({
+        user_id: selectedUserId,
+        message: replyText.trim(),
+        sender_type: "admin",
+        status: "replied",
+      });
+      if (error) throw error;
+      setReplyText("");
+    } catch (err: any) {
+      toast({ title: "فشل الإرسال", description: err.message, variant: "destructive" });
+    } finally {
+      setSending(false);
+    }
+  }
+
+  const FILTERS: { value: FilterType; label: string }[] = [
+    { value: "all", label: "الكل" },
+    { value: "unread", label: "غير مقروء" },
+    { value: "سائق", label: "سائق" },
+    { value: "مستهلك", label: "مستهلك" },
+  ];
+
+  return (
+    <div className="flex flex-1 min-h-0 overflow-hidden">
+      {/* ── Left panel: conversation list ────────────────────── */}
+      <div className="w-[300px] shrink-0 border-r border-border flex flex-col bg-card/50">
+        <div className="p-4 border-b border-border space-y-3">
+          <div className="flex items-center justify-between">
+            <h1 className="text-lg font-bold">خدمة العملاء</h1>
+            {unreadCount > 0 && (
+              <span className="min-w-[22px] h-5 px-1.5 rounded-full bg-amber-500 text-white text-xs font-bold flex items-center justify-center">
+                {unreadCount}
+              </span>
+            )}
+          </div>
+
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+            <Input
+              placeholder="بحث بالاسم أو الرقم..."
+              className="pl-9 h-8 text-sm"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+
+          <div className="flex gap-1">
+            {FILTERS.map((f) => (
+              <button
+                key={f.value}
+                onClick={() => setFilter(f.value)}
+                className={cn(
+                  "flex-1 text-[11px] py-1 rounded-md transition-colors font-medium",
+                  filter === f.value
+                    ? "bg-primary/20 text-primary"
+                    : "text-muted-foreground hover:bg-muted",
+                )}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <ScrollArea className="flex-1">
+          {loading ? (
+            <div className="p-3 space-y-2">
+              {Array(5).fill(0).map((_, i) => (
+                <Skeleton key={i} className="h-[72px] w-full rounded-lg" />
+              ))}
+            </div>
+          ) : filtered.length === 0 ? (
+            <div className="p-8 text-center text-muted-foreground text-sm">
+              <MessageSquare className="w-8 h-8 mx-auto mb-3 opacity-20" />
+              لا توجد محادثات
+            </div>
+          ) : (
+            <div className="p-2 space-y-0.5">
+              {filtered.map((conv) => {
+                const isSelected = selectedUserId === conv.userId;
+                return (
+                  <button
+                    key={conv.userId ?? "__anon__"}
+                    onClick={() => setSelectedUserId(conv.userId)}
+                    className={cn(
+                      "w-full text-right px-3 py-2.5 rounded-lg transition-colors text-sm",
+                      isSelected
+                        ? "bg-primary/10 border border-primary/20"
+                        : conv.isUnread
+                          ? "hover:bg-muted bg-amber-500/5"
+                          : "hover:bg-muted",
+                    )}
+                  >
+                    <div className="flex items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          {conv.isUnread && !isSelected && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                          )}
+                          <span className="font-semibold truncate text-sm">
+                            {conv.user?.name ?? "مجهول"}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {conv.user?.user_type && (
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "text-[10px] h-4 px-1 py-0 border leading-none",
+                                conv.user.user_type === "سائق"
+                                  ? "text-blue-400 border-blue-400/30 bg-blue-400/5"
+                                  : "text-green-400 border-green-400/30 bg-green-400/5",
+                              )}
+                            >
+                              {conv.user.user_type}
+                            </Badge>
+                          )}
+                          {conv.user?.phone && (
+                            <span className="text-[10px] text-muted-foreground truncate">
+                              {conv.user.phone}
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-xs text-muted-foreground truncate mt-1 leading-snug">
+                          {conv.lastMessage.sender_type === "admin" && (
+                            <span className="text-primary/70">أنت: </span>
+                          )}
+                          {conv.lastMessage.message}
+                        </p>
+                      </div>
+
+                      <span className="text-[10px] text-muted-foreground whitespace-nowrap shrink-0 mt-0.5">
+                        {formatRelativeTime(conv.lastMessage.created_at)}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </ScrollArea>
+      </div>
+
+      {/* ── Right panel: conversation view ──────────────────── */}
+      <div className="flex-1 flex flex-col min-w-0">
+        {selectedConv ? (
+          <>
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between shrink-0">
+              <div>
+                <h2 className="font-semibold text-base">{selectedConv.user?.name ?? "مجهول"}</h2>
+                <div className="flex items-center gap-2 mt-0.5">
+                  {selectedConv.user?.user_type && (
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "text-xs border",
+                        selectedConv.user.user_type === "سائق"
+                          ? "text-blue-400 border-blue-400/30"
+                          : "text-green-400 border-green-400/30",
+                      )}
+                    >
+                      {selectedConv.user.user_type}
+                    </Badge>
+                  )}
+                  {selectedConv.user?.phone && (
+                    <span className="text-sm text-muted-foreground">
+                      {selectedConv.user.phone}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <span className="text-xs text-muted-foreground">
+                {selectedConv.messages.length} رسالة
+              </span>
+            </div>
+
+            {/* Messages area */}
+            <div className="flex-1 overflow-y-auto px-6 py-4 space-y-3">
+              {selectedConv.messages.map((msg) => {
+                const isAdmin = msg.sender_type === "admin";
+                return (
+                  <div
+                    key={msg.id}
+                    className={cn("flex", isAdmin ? "justify-end" : "justify-start")}
+                  >
+                    <div
+                      className={cn(
+                        "max-w-[68%] rounded-2xl px-4 py-2.5 text-sm shadow-sm",
+                        isAdmin
+                          ? "bg-primary text-primary-foreground rounded-br-sm"
+                          : "bg-muted text-foreground rounded-bl-sm",
+                      )}
+                    >
+                      <p className="leading-relaxed whitespace-pre-wrap break-words">
+                        {msg.message}
+                      </p>
+                      <p
+                        className={cn(
+                          "text-[10px] mt-1.5",
+                          isAdmin ? "text-primary-foreground/60 text-right" : "text-muted-foreground",
+                        )}
+                      >
+                        {formatDate(msg.created_at)}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Reply input */}
+            <div className="px-6 py-4 border-t border-border shrink-0">
+              <div className="flex items-end gap-2">
+                <Textarea
+                  placeholder="اكتب ردك هنا..."
+                  className="resize-none text-sm min-h-[60px] max-h-[140px]"
+                  dir="rtl"
+                  value={replyText}
+                  onChange={(e) => setReplyText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      sendReply();
+                    }
+                  }}
+                />
+                <Button
+                  size="icon"
+                  className="h-10 w-10 shrink-0 mb-0.5"
+                  onClick={sendReply}
+                  disabled={!replyText.trim() || sending}
+                >
+                  <Send className="w-4 h-4" />
+                </Button>
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1.5">
+                Enter للإرسال • Shift+Enter لسطر جديد
+              </p>
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-muted-foreground">
+            <div className="text-center">
+              <MessageSquare className="w-16 h-16 mx-auto mb-4 opacity-15" />
+              <p className="text-lg font-semibold text-foreground/50">اختر محادثة</p>
+              <p className="text-sm mt-1">
+                اختر محادثة من القائمة لعرض الرسائل والرد
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

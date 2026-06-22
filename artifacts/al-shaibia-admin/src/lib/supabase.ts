@@ -110,6 +110,17 @@ export interface RatingDispute {
   created_at: string;
 }
 
+/** support_messages table — requires sender_type + admin_id columns (ALTER TABLE migration needed) */
+export interface SupportMessage {
+  id: string;
+  user_id: string | null;
+  message: string;
+  status: string | null;
+  created_at: string;
+  sender_type: "user" | "admin" | null;
+  admin_id?: string | null;
+}
+
 export type PaymentStatus = "pending" | "approved" | "rejected";
 export type DisputeStatus = "pending" | "resolved" | "dismissed";
 
