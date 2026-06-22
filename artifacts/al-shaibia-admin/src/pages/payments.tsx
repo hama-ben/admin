@@ -20,6 +20,7 @@ import {
   ResponsiveContainer, XAxis, YAxis, CartesianGrid, Tooltip,
 } from "recharts";
 import { useAutoRefresh } from "@/hooks/use-auto-refresh";
+import { Link } from "wouter";
 
 type ChartType = "bar" | "pie";
 
@@ -397,13 +398,23 @@ export default function PaymentsPage() {
               <AlertTriangle className="h-5 w-5 text-amber-400" />
               السائق لم يُوافق عليه بعد
             </AlertDialogTitle>
-            <AlertDialogDescription className="text-sm leading-relaxed pt-1">
-              <strong className="text-foreground">{pendingApprovalPayment?.driverUser?.name}</strong> لا يزال في قائمة الانتظار
-              ولم يتم قبوله من صفحة <strong className="text-foreground">Driver Queue</strong> بعد.
-              <br /><br />
-              إذا قبلت الدفع الآن، سيُمدَّد الاشتراك بـ 30 يوم — لكن حسابه سيبقى <strong className="text-amber-400">غير مفعّل</strong> حتى تقبله من قائمة الانتظار أيضاً.
-              <br /><br />
-              هل تريد المتابعة وقبول الدفع الآن؟
+            <AlertDialogDescription className="text-sm leading-relaxed pt-1" asChild>
+              <div>
+                <strong className="text-foreground">{pendingApprovalPayment?.driverUser?.name}</strong> لا يزال في قائمة الانتظار
+                ولم يتم قبوله من صفحة <strong className="text-foreground">Driver Queue</strong> بعد.
+                <br /><br />
+                إذا قبلت الدفع الآن، سيُمدَّد الاشتراك بـ 30 يوم — لكن حسابه سيبقى <strong className="text-amber-400">غير مفعّل</strong> حتى تقبله من قائمة الانتظار أيضاً.
+                <br /><br />
+                هل تريد المتابعة وقبول الدفع الآن؟
+                <br /><br />
+                <Link
+                  to="/driver-queue"
+                  className="inline-flex items-center gap-1 text-primary underline-offset-4 hover:underline"
+                  onClick={() => setPendingApprovalPayment(null)}
+                >
+                  الذهاب إلى قائمة الانتظار ←
+                </Link>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
