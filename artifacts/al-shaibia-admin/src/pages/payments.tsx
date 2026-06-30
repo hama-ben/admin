@@ -179,7 +179,7 @@ export default function PaymentsPage() {
       await supabase.from("announcements").insert({
         title: "تم قبول دفع وصلك ✅",
         content: "تم إضافة 30 يوماً إلى حسابك",
-        target_audience: "Drivers",
+        target_audience: payment.driver_id,
         badge_text: "Success",
         is_active: true,
       });
@@ -210,7 +210,7 @@ export default function PaymentsPage() {
       await supabase.from("announcements").insert({
         title: "تم رفض دفعك",
         content: "عذراً، لم يتم قبول وصل الدفع. يرجى التواصل معنا: https://www.facebook.com/profile.php?id=61590856328769",
-        target_audience: "Drivers",
+        target_audience: payment.driver_id,
         badge_text: "Warning",
         is_active: true,
       });

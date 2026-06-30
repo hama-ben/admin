@@ -120,7 +120,7 @@ export default function RejectedDriversPage() {
         await supabase.from("announcements").insert({
           title: "تمت مراجعة طعنك ✅",
           content: "تمت الموافقة على طعنك، تم تفعيل حسابك",
-          target_audience: "Drivers",
+          target_audience: driver.id,
           badge_text: "Success",
           is_active: true,
         });
@@ -130,7 +130,7 @@ export default function RejectedDriversPage() {
           content: driver.first_approval_granted
             ? "تم تجديد اشتراكك. مرحباً بعودتك إلى عائلة ميزو!"
             : "تهانينا! حصلت على هدية 30 يوماً + يومين إضافيين كمكافأة على ثقتك بنا. مرحباً بك في عائلة ميزو!",
-          target_audience: "Drivers",
+          target_audience: driver.id,
           badge_text: "Success",
           is_active: true,
         });

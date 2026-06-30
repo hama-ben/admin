@@ -120,7 +120,7 @@ export default function DriverQueuePage() {
         content: firstApprovalGranted
           ? "تم تجديد اشتراكك. مرحباً بعودتك إلى عائلة ميزو!"
           : "تهانينا! حصلت على هدية 30 يوماً + يومين إضافيين كمكافأة على ثقتك بنا. مرحباً بك في عائلة ميزو!",
-        target_audience: "Drivers",
+        target_audience: driverId,
         badge_text: "Success",
         is_active: true,
       });
@@ -147,7 +147,7 @@ export default function DriverQueuePage() {
       await supabase.from("announcements").insert({
         title: "تم رفض طلبك",
         content: "عذراً، لم يتم قبول طلبك. يرجى التواصل معنا عبر الفيسبوك: https://www.facebook.com/profile.php?id=61590856328769",
-        target_audience: "Drivers",
+        target_audience: driverId,
         badge_text: "Warning",
         is_active: true,
       });
