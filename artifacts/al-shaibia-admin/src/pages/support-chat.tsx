@@ -154,13 +154,15 @@ export default function SupportChatPage() {
   // Ensures new messages appear even if Supabase Realtime is not enabled
   // for the support_messages table in the Supabase dashboard.
   async function silentRefresh() {
-    // Skip while a send is in-flight to avoid overwriting the optimistic message
+    // Guard at entry AND after the async fetch: a send may have started while
+    // the Supabase request was in-flight, in which case we discard the result
+    // to avoid overwriting the optimistic message.
     if (sendingRef.current) return;
     const { data: msgs } = await supabase
       .from("support_messages")
       .select("*")
       .order("created_at", { ascending: true });
-    if (!msgs) return;
+    if (!msgs || sendingRef.current) return;
     setMessages(msgs as SupportMessage[]);
 
     const ids = [...new Set(msgs.map((m) => m.user_id).filter(Boolean))] as string[];
