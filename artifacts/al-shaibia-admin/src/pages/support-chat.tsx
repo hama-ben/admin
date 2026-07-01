@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { supabase } from "@/lib/supabase";
+import { useAutoRefresh } from "@/hooks/use-auto-refresh";
 import { formatDate } from "@/lib/constants";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -119,7 +120,11 @@ export default function SupportChatPage() {
         { event: "INSERT", schema: "public", table: "support_messages" },
         (payload) => {
           const newMsg = payload.new as SupportMessage;
-          setMessages((prev) => [...prev, newMsg]);
+          setMessages((prev) => {
+            // Deduplicate: skip if already present (optimistic update or prior event)
+            if (prev.some((m) => m.id === newMsg.id)) return prev;
+            return [...prev, newMsg];
+          });
           if (newMsg.user_id) {
             setUsers((prev) => {
               if (!prev.has(newMsg.user_id!)) fetchUser(newMsg.user_id!);
@@ -141,6 +146,28 @@ export default function SupportChatPage() {
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
+
+  // ── Silent polling fallback (3 s) ────────────────────────
+  // Ensures new messages appear even if Supabase Realtime is not enabled
+  // for the support_messages table in the Supabase dashboard.
+  async function silentRefresh() {
+    const { data: msgs } = await supabase
+      .from("support_messages")
+      .select("*")
+      .order("created_at", { ascending: true });
+    if (!msgs) return;
+    setMessages(msgs as SupportMessage[]);
+
+    const ids = [...new Set(msgs.map((m) => m.user_id).filter(Boolean))] as string[];
+    if (ids.length > 0) {
+      const { data: usersData } = await supabase
+        .from("users")
+        .select("id, name, phone, user_type")
+        .in("id", ids);
+      if (usersData) setUsers(new Map((usersData as ConvUser[]).map((u) => [u.id, u])));
+    }
+  }
+  useAutoRefresh(silentRefresh, 3000);
 
   // Auto-scroll on new message or conversation switch
   useEffect(() => {
@@ -270,16 +297,40 @@ export default function SupportChatPage() {
   async function sendReply() {
     if (!replyText.trim() || !selectedUserId) return;
     setSending(true);
+
+    // Optimistic update — message appears instantly in the UI
+    const tempId = `temp-${Date.now()}`;
+    const optimistic: SupportMessage = {
+      id: tempId,
+      user_id: selectedUserId,
+      message: replyText.trim(),
+      sender_type: "admin",
+      status: "replied",
+      created_at: new Date().toISOString(),
+    };
+    setMessages((prev) => [...prev, optimistic]);
+    setReplyText("");
+
     try {
-      const { error } = await supabase.from("support_messages").insert({
-        user_id: selectedUserId,
-        message: replyText.trim(),
-        sender_type: "admin",
-        status: "replied",
-      });
+      const { data, error } = await supabase
+        .from("support_messages")
+        .insert({
+          user_id: selectedUserId,
+          message: optimistic.message,
+          sender_type: "admin",
+          status: "replied",
+        })
+        .select()
+        .single();
       if (error) throw error;
-      setReplyText("");
+      // Replace temp entry with the real server row (has the real UUID)
+      setMessages((prev) =>
+        prev.map((m) => (m.id === tempId ? (data as SupportMessage) : m)),
+      );
     } catch (err: any) {
+      // Roll back optimistic message on failure
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      setReplyText(optimistic.message);
       toast({ title: "فشل الإرسال", description: err.message, variant: "destructive" });
     } finally {
       setSending(false);
