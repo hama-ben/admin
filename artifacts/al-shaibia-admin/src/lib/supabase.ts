@@ -99,13 +99,20 @@ export interface Announcement {
   created_at: string;
 }
 
-/** ratings_disputes table */
+/**
+ * Shape used by the Disputes admin page.
+ * Backed by the `ratings` table (filtered to is_disputed = true).
+ * Column mapping: rated_user_id → driver_id, stars → rating,
+ *                 dispute_reason → comment, dispute_status → status.
+ * Requires `dispute_status` column on the ratings table — see migration note
+ * in disputes.tsx.
+ */
 export interface RatingDispute {
   id: string;
   driver_id: string | null;
   rating: number;
   comment: string | null;
-  wilaya: string | null;
+  wilaya: string | null; // not stored in ratings; always null
   status: "pending" | "resolved" | "dismissed";
   created_at: string;
 }

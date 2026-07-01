@@ -34,6 +34,30 @@ function StarRating({ rating }: { rating: number }) {
   );
 }
 
+/*
+ * MIGRATION NOTE — run once in Supabase SQL editor:
+ *
+ *   ALTER TABLE public.ratings
+ *   ADD COLUMN IF NOT EXISTS dispute_status text DEFAULT 'pending'
+ *   CHECK (dispute_status IN ('pending', 'resolved', 'dismissed'));
+ *
+ * This adds the dispute_status column that allows admins to mark
+ * disputed ratings as resolved or dismissed.
+ */
+
+/** Map a raw `ratings` row to the RatingDispute UI shape. */
+function mapRow(row: Record<string, any>): RatingDispute {
+  return {
+    id: row.id,
+    driver_id: row.rated_user_id ?? null,
+    rating: row.stars ?? 0,
+    comment: row.dispute_reason ?? row.comment ?? null,
+    wilaya: null, // not stored in ratings table
+    status: (row.dispute_status as DisputeStatus) ?? "pending",
+    created_at: row.created_at,
+  };
+}
+
 export default function DisputesPage() {
   const [disputes, setDisputes] = useState<RatingDispute[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,7 +70,7 @@ export default function DisputesPage() {
     fetchDisputes();
     const channel = supabase
       .channel("disputes-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "ratings_disputes" }, fetchDisputes)
+      .on("postgres_changes", { event: "*", schema: "public", table: "ratings" }, fetchDisputes)
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);
@@ -55,11 +79,12 @@ export default function DisputesPage() {
     setLoading(true);
     try {
       const { data, error } = await supabase
-        .from("ratings_disputes")
-        .select("*")
+        .from("ratings")
+        .select("id, rated_user_id, stars, dispute_reason, comment, created_at")
+        .eq("is_disputed", true)
         .order("created_at", { ascending: false });
       if (error) throw error;
-      setDisputes((data as RatingDispute[]) ?? []);
+      setDisputes((data ?? []).map(mapRow));
     } catch (err: any) {
       toast({ title: "خطأ في جلب البيانات", description: err.message, variant: "destructive" });
     } finally {
@@ -69,10 +94,21 @@ export default function DisputesPage() {
 
   const handleStatusChange = async (id: string, status: DisputeStatus) => {
     try {
-      const { error } = await supabase.from("ratings_disputes").update({ status }).eq("id", id);
-      if (error) throw error;
-      setDisputes((prev) => prev.map((d) => d.id === id ? { ...d, status } : d));
-      if (selected?.id === id) setSelected((s) => s ? { ...s, status } : null);
+      // When resolved or dismissed, mark is_disputed = false so the rating is
+      // removed from the disputes queue. To persist distinct resolved/dismissed
+      // states, run the migration in the comment above to add dispute_status.
+      if (status !== "pending") {
+        const { error } = await supabase
+          .from("ratings")
+          .update({ is_disputed: false })
+          .eq("id", id);
+        if (error) throw error;
+        setDisputes((prev) => prev.filter((d) => d.id !== id));
+        if (selected?.id === id) setSelected(null);
+      } else {
+        setDisputes((prev) => prev.map((d) => d.id === id ? { ...d, status } : d));
+        if (selected?.id === id) setSelected((s) => s ? { ...s, status } : null);
+      }
       toast({ title: "تم تحديث الحالة", description: `"${STATUS_LABELS[status]}"` });
     } catch (err: any) {
       toast({ title: "فشل التحديث", description: err.message, variant: "destructive" });
