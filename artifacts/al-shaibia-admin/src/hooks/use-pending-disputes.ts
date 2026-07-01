@@ -6,9 +6,9 @@ export function usePendingDisputeCount() {
 
   async function fetchCount() {
     const { count: c } = await supabase
-      .from("ratings_disputes")
+      .from("ratings")
       .select("*", { count: "exact", head: true })
-      .eq("status", "pending");
+      .eq("is_disputed", true);
     setCount(c ?? 0);
   }
 
@@ -16,7 +16,7 @@ export function usePendingDisputeCount() {
     fetchCount();
     const channel = supabase
       .channel("pending-disputes-count")
-      .on("postgres_changes", { event: "*", schema: "public", table: "ratings_disputes" }, fetchCount)
+      .on("postgres_changes", { event: "*", schema: "public", table: "ratings" }, fetchCount)
       .subscribe();
     return () => { supabase.removeChannel(channel); };
   }, []);

@@ -330,8 +330,9 @@ router.get("/disputes", async (_req, res) => {
   try {
     const db = adminClient();
     const { data, error } = await db
-      .from("ratings_disputes")
-      .select("*")
+      .from("ratings")
+      .select("id, rated_user_id, stars, dispute_reason, comment, is_disputed, created_at")
+      .eq("is_disputed", true)
       .order("created_at", { ascending: false });
     if (error) throw error;
     if (!data || data.length === 0) {
@@ -339,7 +340,7 @@ router.get("/disputes", async (_req, res) => {
       return;
     }
 
-    const driverIds = [...new Set(data.map((d: any) => d.driver_id).filter(Boolean))];
+    const driverIds = [...new Set(data.map((d: any) => d.rated_user_id).filter(Boolean))];
     const { data: users } = await db
       .from("users")
       .select("id, name, phone, wilaya, user_type")
@@ -347,8 +348,14 @@ router.get("/disputes", async (_req, res) => {
     const usersMap = new Map((users ?? []).map((u: any) => [u.id, u]));
 
     res.json(data.map((d: any) => ({
-      ...d,
-      user: usersMap.get(d.driver_id) ?? null,
+      id: d.id,
+      driver_id: d.rated_user_id,
+      rating: d.stars,
+      comment: d.dispute_reason ?? d.comment ?? null,
+      wilaya: usersMap.get(d.rated_user_id)?.wilaya ?? null,
+      status: "pending",
+      created_at: d.created_at,
+      user: usersMap.get(d.rated_user_id) ?? null,
     })));
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -360,9 +367,12 @@ router.patch("/disputes/:id", async (req, res) => {
   try {
     const db = adminClient();
     const { status } = req.body;
+    // resolved/dismissed → mark is_disputed=false to remove from queue.
+    // Add dispute_status column via migration for persistent status tracking.
+    const update = status !== "pending" ? { is_disputed: false } : {};
     const { error } = await db
-      .from("ratings_disputes")
-      .update({ status })
+      .from("ratings")
+      .update(update)
       .eq("id", req.params.id);
     if (error) throw error;
     res.json({ ok: true });
@@ -376,9 +386,9 @@ router.get("/disputes/pending-count", async (_req, res) => {
   try {
     const db = adminClient();
     const { count, error } = await db
-      .from("ratings_disputes")
+      .from("ratings")
       .select("*", { count: "exact", head: true })
-      .eq("status", "pending");
+      .eq("is_disputed", true);
     if (error) throw error;
     res.json({ count: count ?? 0 });
   } catch (err: any) {
