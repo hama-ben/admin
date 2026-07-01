@@ -101,6 +101,9 @@ export default function SupportChatPage() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const channelName = useRef(`support-chat-${Math.random().toString(36).slice(2)}`);
+  /** True while sendReply is in-flight; silentRefresh skips during this window
+   *  to avoid overwriting the optimistic message before the real row arrives. */
+  const sendingRef = useRef(false);
   const { toast } = useToast();
 
   // ── Notes state ─────────────────────────────────────────
@@ -151,6 +154,8 @@ export default function SupportChatPage() {
   // Ensures new messages appear even if Supabase Realtime is not enabled
   // for the support_messages table in the Supabase dashboard.
   async function silentRefresh() {
+    // Skip while a send is in-flight to avoid overwriting the optimistic message
+    if (sendingRef.current) return;
     const { data: msgs } = await supabase
       .from("support_messages")
       .select("*")
@@ -297,6 +302,7 @@ export default function SupportChatPage() {
   async function sendReply() {
     if (!replyText.trim() || !selectedUserId) return;
     setSending(true);
+    sendingRef.current = true;
 
     // Optimistic update — message appears instantly in the UI
     const tempId = `temp-${Date.now()}`;
@@ -323,10 +329,14 @@ export default function SupportChatPage() {
         .select()
         .single();
       if (error) throw error;
-      // Replace temp entry with the real server row (has the real UUID)
-      setMessages((prev) =>
-        prev.map((m) => (m.id === tempId ? (data as SupportMessage) : m)),
-      );
+      const real = data as SupportMessage;
+      // Remove the temp entry. If realtime already delivered the real row,
+      // deduplicate by dropping any existing entry with the same real ID.
+      setMessages((prev) => {
+        const withoutTemp = prev.filter((m) => m.id !== tempId);
+        if (withoutTemp.some((m) => m.id === real.id)) return withoutTemp;
+        return [...withoutTemp, real];
+      });
     } catch (err: any) {
       // Roll back optimistic message on failure
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
@@ -334,6 +344,7 @@ export default function SupportChatPage() {
       toast({ title: "فشل الإرسال", description: err.message, variant: "destructive" });
     } finally {
       setSending(false);
+      sendingRef.current = false;
     }
   }
 

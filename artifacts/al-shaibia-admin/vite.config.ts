@@ -20,17 +20,19 @@ if (!isBuild && (Number.isNaN(port) || port <= 0)) {
 const basePath = process.env.BASE_PATH || "/";
 
 /** Serve index.html for any path that is not an API call, a Vite internal,
- *  or a static asset (has a file extension). This enables React Router's
- *  History API in both dev (`vite dev`) and preview (`vite preview`) modes. */
+ *  or a static asset. This enables React Router's History API in both
+ *  dev (`vite dev`) and preview (`vite preview`) modes.
+ *
+ *  Extension detection: inspect the last path segment before any query/hash.
+ *  If it contains a dot (e.g. main.js, logo.png, site.webmanifest) it is
+ *  treated as an asset and left alone. Dotless segments (e.g. /disputes,
+ *  /rejected-drivers) are SPA routes and get index.html. */
 function spaFallback(): import("vite").Plugin {
   function rewrite(req: { url?: string }) {
     const url = req.url ?? "";
-    if (
-      !url.startsWith("/api") &&
-      !url.startsWith("/@") &&
-      !url.startsWith("/__") &&
-      !url.match(/\.\w{1,6}(\?|$)/)
-    ) {
+    if (url.startsWith("/api") || url.startsWith("/@") || url.startsWith("/__")) return;
+    const lastSegment = url.split("?")[0].split("/").pop() ?? "";
+    if (!lastSegment.includes(".")) {
       req.url = "/index.html";
     }
   }
