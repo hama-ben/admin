@@ -146,7 +146,9 @@ export default function SupportChatPage() {
           );
         },
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log("[Realtime] support_messages channel status:", status);
+      });
     return () => { supabase.removeChannel(channel); };
   }, []);
 
@@ -174,7 +176,7 @@ export default function SupportChatPage() {
       if (usersData) setUsers(new Map((usersData as ConvUser[]).map((u) => [u.id, u])));
     }
   }
-  useAutoRefresh(silentRefresh, 3000);
+  useAutoRefresh(silentRefresh, 15000);
 
   // Auto-scroll on new message or conversation switch
   useEffect(() => {
